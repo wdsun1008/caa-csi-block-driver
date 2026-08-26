@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,8 +20,6 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
 
 var nsLogger = log.New(log.Writer(), "[caa-csi/node] ", log.LstdFlags|log.Lmsgprefix)
@@ -84,31 +81,19 @@ func (ns *nodeServer) NodeStageVolume(_ context.Context, req *csi.NodeStageVolum
 		return nil, status.Error(codes.InvalidArgument, "Volume capability missing")
 	}
 
-	params := req.GetVolumeContext()
-
-	p, err := provider.NewBlockVolumeProvider(params)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create provider: %v", err)
+	devicePath := strings.TrimSpace(req.GetVolumeContext()["cloud-volume-path"])
+	if devicePath == "" {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"volume %s has no controller-provided cloud-volume-path", volumeID)
 	}
-
-	var sizeBytes int64 = 1073741824
-	if capacityStr := params["capacity_in_bytes"]; capacityStr != "" {
-		if parsed, err := strconv.ParseInt(capacityStr, 10, 64); err == nil && parsed > 0 {
-			sizeBytes = parsed
-		} else {
-			nsLogger.Printf("WARNING: invalid capacity_in_bytes %q, using default 1GiB", capacityStr)
-		}
-	}
-
-	volInfo, err := p.CreateVolume(volumeID, sizeBytes)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "provider.CreateVolume failed: %v", err)
-	}
-
 	ns.mu.Lock()
-	ns.devices[volumeID] = volInfo.Path
-	ns.mu.Unlock()
-	nsLogger.Printf("NodeStageVolume: %s staged (provider=%s, path=%s)", volumeID, volInfo.Provider, volInfo.Path)
+	defer ns.mu.Unlock()
+	if existing := ns.devices[volumeID]; existing != "" && existing != devicePath {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"volume %s was already staged with cloud-volume-path %q, not %q", volumeID, existing, devicePath)
+	}
+	ns.devices[volumeID] = devicePath
+	nsLogger.Printf("NodeStageVolume: %s staged (path=%s)", volumeID, devicePath)
 
 	return &csi.NodeStageVolumeResponse{}, nil
 }
@@ -131,20 +116,20 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 		return nil, status.Errorf(codes.InvalidArgument, "target path %q is not a canonical kubelet CSI mount path", targetPath)
 	}
 
+	contextPath := strings.TrimSpace(req.GetVolumeContext()["cloud-volume-path"])
+	// Kubelet may replay NodePublish after a node-plugin restart without
+	// replaying NodeStage first. The controller-provided cloud identity is
+	// sufficient to rebuild direct-volume metadata.
 	ns.mu.Lock()
 	devicePath := ns.devices[volumeID]
+	if devicePath == "" && contextPath != "" {
+		devicePath = contextPath
+		ns.devices[volumeID] = devicePath
+	}
 	ns.mu.Unlock()
-
-	if devicePath == "" {
-		// Kubelet may replay NodePublish after a node-plugin restart without
-		// replaying NodeStage first. The controller-provided cloud identity is
-		// sufficient to rebuild direct-volume metadata.
-		devicePath = strings.TrimSpace(req.GetVolumeContext()["cloud-volume-path"])
-		if devicePath != "" {
-			ns.mu.Lock()
-			ns.devices[volumeID] = devicePath
-			ns.mu.Unlock()
-		}
+	if devicePath != "" && contextPath != "" && contextPath != devicePath {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"volume %s context has cloud-volume-path %q, staged path is %q", volumeID, contextPath, devicePath)
 	}
 	if devicePath == "" {
 		return nil, status.Errorf(codes.FailedPrecondition, "volume %s not staged (no device path)", volumeID)
@@ -154,9 +139,7 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	for key, value := range req.GetVolumeContext() {
 		attrib[key] = value
 	}
-	if attrib["cloud-volume-path"] == "" {
-		attrib["cloud-volume-path"] = devicePath
-	}
+	attrib["cloud-volume-path"] = devicePath
 	providerName := strings.TrimSpace(attrib["cloud-provider"])
 	if providerName == "" {
 		providerName = strings.TrimSpace(attrib["cloudProvider"])

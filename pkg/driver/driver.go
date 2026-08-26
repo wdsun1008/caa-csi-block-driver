@@ -17,15 +17,18 @@ import (
 var drvLogger = log.New(log.Writer(), "[caa-csi/driver] ", log.LstdFlags|log.Lmsgprefix)
 
 type Config struct {
-	Endpoint      string
-	DriverName    string
-	VendorVersion string
-	NodeID        string
+	Endpoint       string
+	DriverName     string
+	VendorVersion  string
+	NodeID         string
+	Component      string
+	VolumeStoreDir string
 }
 
 type Driver struct {
 	config Config
 	server *grpc.Server
+	store  *volumeStore
 }
 
 func NewDriver(cfg Config) (*Driver, error) {
@@ -35,11 +38,30 @@ func NewDriver(cfg Config) (*Driver, error) {
 	if cfg.VendorVersion == "" {
 		return nil, fmt.Errorf("driver version is required")
 	}
-	if cfg.NodeID == "" {
+	if cfg.Component == "" {
+		cfg.Component = "all"
+	}
+	if cfg.Component != "all" && cfg.Component != "controller" && cfg.Component != "node" {
+		return nil, fmt.Errorf("component must be all, controller, or node")
+	}
+	if (cfg.Component == "all" || cfg.Component == "node") && cfg.NodeID == "" {
 		return nil, fmt.Errorf("node ID is required")
 	}
 
-	return &Driver{config: cfg}, nil
+	driver := &Driver{config: cfg}
+	if cfg.Component == "all" || cfg.Component == "controller" {
+		var err error
+		if cfg.VolumeStoreDir == "" {
+			driver.store, err = newVolumeStore()
+		} else {
+			driver.store, err = newVolumeStoreAt(cfg.VolumeStoreDir)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return driver, nil
 }
 
 func (d *Driver) Run() error {
@@ -58,18 +80,27 @@ func (d *Driver) Run() error {
 	}
 
 	d.server = grpc.NewServer()
+	d.registerServices(d.server)
 
-	csi.RegisterIdentityServer(d.server, &identityServer{
-		driverName:    d.config.DriverName,
-		vendorVersion: d.config.VendorVersion,
-	})
-	csi.RegisterControllerServer(d.server, newControllerServer())
-	csi.RegisterNodeServer(d.server, newNodeServer(d.config.NodeID))
-
-	drvLogger.Printf("Listening on %s://%s (driver=%s, version=%s, node=%s)",
-		scheme, addr, d.config.DriverName, d.config.VendorVersion, d.config.NodeID)
+	drvLogger.Printf("Listening on %s://%s (driver=%s, version=%s, component=%s, node=%s)",
+		scheme, addr, d.config.DriverName, d.config.VendorVersion, d.config.Component, d.config.NodeID)
 
 	return d.server.Serve(listener)
+}
+
+func (d *Driver) registerServices(server *grpc.Server) {
+	controller := d.config.Component == "all" || d.config.Component == "controller"
+	csi.RegisterIdentityServer(server, &identityServer{
+		driverName:    d.config.DriverName,
+		vendorVersion: d.config.VendorVersion,
+		controller:    controller,
+	})
+	if controller {
+		csi.RegisterControllerServer(server, newControllerServer(d.store))
+	}
+	if d.config.Component == "all" || d.config.Component == "node" {
+		csi.RegisterNodeServer(server, newNodeServer(d.config.NodeID))
+	}
 }
 
 func (d *Driver) Stop() {

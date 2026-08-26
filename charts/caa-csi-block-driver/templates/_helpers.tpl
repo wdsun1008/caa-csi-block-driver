@@ -47,6 +47,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end }}
 
+{{- define "caa-csi.nodeServiceAccountName" -}}
+{{- printf "%s-node" (include "caa-csi.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
 {{- define "caa-csi.namespace" -}}
 {{- .Values.namespace.name | default .Release.Namespace }}
 {{- end }}
@@ -61,4 +65,8 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 
 {{- define "caa-csi.bootstrapConfigMapName" -}}
 {{- printf "%s-bootstrap-params" (include "caa-csi.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "caa-csi.controllerStateClaimName" -}}
+{{- printf "%s-controller-state" (include "caa-csi.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}

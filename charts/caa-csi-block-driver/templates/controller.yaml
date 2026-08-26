@@ -1,0 +1,127 @@
+{{- include "caa-csi.validateValues" . }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "caa-csi.controllerStateClaimName" . }}
+  namespace: {{ include "caa-csi.namespace" . }}
+  labels:
+    {{- include "caa-csi.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.controller.state.size }}
+  {{- with .Values.controller.state.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "caa-csi.fullname" . }}-controller
+  namespace: {{ include "caa-csi.namespace" . }}
+  labels:
+    {{- include "caa-csi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "caa-csi.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "caa-csi.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: {{ include "caa-csi.serviceAccountName" . }}
+      containers:
+        - name: csi-provisioner
+          image: {{ .Values.sidecarImages.provisioner }}
+          args:
+            - "-v=3"
+            - "--csi-address=/csi/csi.sock"
+            - "--worker-threads=5"
+            - "--leader-election=true"
+          {{- with .Values.resources.provisioner }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+
+        - name: caa-csi-block-controller
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - "--drivername={{ .Values.csiDriver.name }}"
+            - "--endpoint=unix:///csi/csi.sock"
+            - "--component=controller"
+            - "--volume-store-dir=/var/lib/caa-csi-block/volumes"
+          env:
+            - name: CSI_CLOUD_PROVIDER
+              value: {{ .Values.provider | quote }}
+            - name: CSI_BOOTSTRAP_PARAMS_FILE
+              value: /etc/caa-csi-block/bootstrap-params.json
+            {{- if eq .Values.provider "aws" }}
+            - name: AWS_REGION
+              value: {{ required "aws.region is required when provider=aws" .Values.aws.region | quote }}
+            {{- if and (not .Values.aws.irsa.enabled) .Values.aws.staticCredentials.enabled }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.aws.staticCredentials.secretName }}
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.aws.staticCredentials.secretName }}
+                  key: AWS_SECRET_ACCESS_KEY
+            {{- end }}
+            {{- end }}
+          {{- with .Values.resources.driver }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: /var/lib/caa-csi-block
+              name: controller-state
+            - mountPath: /etc/caa-csi-block
+              name: bootstrap-params
+              readOnly: true
+            {{- if eq .Values.provider "libvirt" }}
+            - mountPath: {{ .Values.libvirt.volumeDir }}
+              name: libvirt-pool
+            {{- end }}
+      volumes:
+        - name: socket-dir
+          emptyDir: {}
+        - name: controller-state
+          persistentVolumeClaim:
+            claimName: {{ include "caa-csi.controllerStateClaimName" . }}
+        - name: bootstrap-params
+          configMap:
+            name: {{ include "caa-csi.bootstrapConfigMapName" . }}
+        {{- if eq .Values.provider "libvirt" }}
+        - name: libvirt-pool
+          hostPath:
+            path: {{ .Values.libvirt.volumeDir }}
+            type: DirectoryOrCreate
+        {{- end }}

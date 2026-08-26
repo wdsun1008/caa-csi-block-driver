@@ -6,46 +6,21 @@ metadata:
   namespace: {{ include "caa-csi.namespace" . }}
   labels:
     {{- include "caa-csi.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node
 spec:
   selector:
     matchLabels:
       {{- include "caa-csi.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: node
   template:
     metadata:
       labels:
         {{- include "caa-csi.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: node
     spec:
-      serviceAccountName: {{ include "caa-csi.serviceAccountName" . }}
+      serviceAccountName: {{ include "caa-csi.nodeServiceAccountName" . }}
+      automountServiceAccountToken: false
       containers:
-        - name: csi-provisioner
-          image: {{ .Values.sidecarImages.provisioner }}
-          args:
-            - "-v=3"
-            - "--csi-address=/csi/csi.sock"
-            - "--worker-threads=5"
-          env:
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-            - name: NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-          {{- with .Values.resources.provisioner }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          securityContext:
-            privileged: {{ .Values.nodePlugin.privileged }}
-          volumeMounts:
-            - mountPath: /csi
-              name: socket-dir
-
         - name: node-driver-registrar
           image: {{ .Values.sidecarImages.nodeDriverRegistrar }}
           args:
@@ -62,7 +37,9 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           securityContext:
-            privileged: {{ .Values.nodePlugin.privileged }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
@@ -75,32 +52,13 @@ spec:
           args:
             - "--drivername={{ .Values.csiDriver.name }}"
             - "--endpoint=unix:///csi/csi.sock"
+            - "--component=node"
             - "--nodeid=$(KUBE_NODE_NAME)"
           env:
             - name: KUBE_NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-            - name: CSI_CLOUD_PROVIDER
-              value: {{ .Values.provider | quote }}
-            - name: CSI_BOOTSTRAP_PARAMS_FILE
-              value: /etc/caa-csi-block/bootstrap-params.json
-            {{- if eq .Values.provider "aws" }}
-            - name: AWS_REGION
-              value: {{ required "aws.region is required when provider=aws" .Values.aws.region | quote }}
-            {{- if and (not .Values.aws.irsa.enabled) .Values.aws.staticCredentials.enabled }}
-            - name: AWS_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.aws.staticCredentials.secretName }}
-                  key: AWS_ACCESS_KEY_ID
-            - name: AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.aws.staticCredentials.secretName }}
-                  key: AWS_SECRET_ACCESS_KEY
-            {{- end }}
-            {{- end }}
           {{- with .Values.resources.driver }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -118,11 +76,6 @@ spec:
               mountPropagation: Bidirectional
             - mountPath: /run/kata-containers/shared/direct-volumes
               name: shared-directvols
-            - mountPath: /var/lib/caa-csi-block
-              name: csi-data
-            - mountPath: /etc/caa-csi-block
-              name: bootstrap-params
-              readOnly: true
             {{- if eq .Values.provider "libvirt" }}
             - mountPath: {{ .Values.libvirt.volumeDir }}
               name: libvirt-pool
@@ -149,14 +102,6 @@ spec:
           hostPath:
             path: /run/kata-containers/shared/direct-volumes/
             type: DirectoryOrCreate
-        - name: csi-data
-          hostPath:
-            path: /var/lib/caa-csi-block
-            type: DirectoryOrCreate
-        - name: bootstrap-params
-          configMap:
-            name: {{ include "caa-csi.bootstrapConfigMapName" . }}
-            optional: true
         {{- if eq .Values.provider "libvirt" }}
         - name: libvirt-pool
           hostPath:

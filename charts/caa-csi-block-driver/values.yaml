@@ -58,6 +58,12 @@ storageClass:
   volumeBindingMode: Immediate
   allowVolumeExpansion: true
 
+controller:
+  state:
+    size: 1Gi
+    # This must be a host-cluster StorageClass, never this CSI driver itself.
+    storageClassName: ""
+
 serviceAccount:
   create: true
   name: ""

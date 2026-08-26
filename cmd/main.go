@@ -18,19 +18,21 @@ import (
 )
 
 var (
-	driverName = flag.String("drivername", "caa-csi-block.csi.confidentialcontainers.io", "CSI driver name")
-	endpoint   = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
-	nodeID     = flag.String("nodeid", "", "Node ID")
-	version    = "0.2.0"
+	driverName     = flag.String("drivername", "caa-csi-block.csi.confidentialcontainers.io", "CSI driver name")
+	endpoint       = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
+	nodeID         = flag.String("nodeid", "", "Node ID")
+	component      = flag.String("component", "all", "CSI component to serve: controller, node, or all")
+	volumeStoreDir = flag.String("volume-store-dir", "", "Durable controller volume store directory")
+	version        = "0.2.0"
 )
 
 func main() {
 	flag.Parse()
 
-	if *nodeID == "" {
+	if (*component == "all" || *component == "node") && *nodeID == "" {
 		*nodeID = os.Getenv("KUBE_NODE_NAME")
 	}
-	if *nodeID == "" {
+	if (*component == "all" || *component == "node") && *nodeID == "" {
 		hostname, err := os.Hostname()
 		if err != nil || hostname == "" {
 			log.Fatal("Node ID is required (--nodeid, KUBE_NODE_NAME env, or resolvable hostname)")
@@ -40,10 +42,12 @@ func main() {
 	}
 
 	d, err := driver.NewDriver(driver.Config{
-		Endpoint:      *endpoint,
-		DriverName:    *driverName,
-		VendorVersion: version,
-		NodeID:        *nodeID,
+		Endpoint:       *endpoint,
+		DriverName:     *driverName,
+		VendorVersion:  version,
+		NodeID:         *nodeID,
+		Component:      *component,
+		VolumeStoreDir: *volumeStoreDir,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create driver: %v", err)

@@ -375,6 +375,39 @@ func TestNodeUnpublishVolumeIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestNodeStageUsesOnlyControllerVolumeIdentity(t *testing.T) {
+	node := newNodeServer("node-1")
+	capability := publishRequest("/unused", csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER, false).VolumeCapability
+	request := &csi.NodeStageVolumeRequest{
+		VolumeId: "workspace", StagingTargetPath: "/staging/workspace",
+		VolumeCapability: capability,
+		VolumeContext:    map[string]string{"cloud-volume-path": "d-workspace"},
+	}
+	if _, err := node.NodeStageVolume(t.Context(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.NodeStageVolume(t.Context(), request); err != nil {
+		t.Fatalf("idempotent stage: %v", err)
+	}
+	changed := *request
+	changed.VolumeContext = map[string]string{"cloud-volume-path": "d-other"}
+	if _, err := node.NodeStageVolume(t.Context(), &changed); status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("changed identity status=%v, want FailedPrecondition", status.Code(err))
+	}
+}
+
+func TestNodeStageRequiresControllerVolumeIdentity(t *testing.T) {
+	node := newNodeServer("node-1")
+	capability := publishRequest("/unused", csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER, false).VolumeCapability
+	_, err := node.NodeStageVolume(t.Context(), &csi.NodeStageVolumeRequest{
+		VolumeId: "workspace", StagingTargetPath: "/staging/workspace",
+		VolumeCapability: capability,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("status=%v, want FailedPrecondition", status.Code(err))
+	}
+}
+
 func TestReadDirectVolumeMetadataRejectsUnknownAndTrailingFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), mountInfoFileName)
 	base := `{"version":1,"volume-type":"block","volume-mode":"filesystem","device":"d-1","fstype":"ext4","readonly":true,"options":["noatime","ro"],"pod-uid":"pod-1","volume-handle":"pvc-1"}`

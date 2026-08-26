@@ -5,11 +5,13 @@ package driver
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
@@ -24,16 +26,21 @@ const (
 )
 
 type volumeRecord struct {
-	VolumeID      string            `json:"volumeID"`
-	Provider      string            `json:"provider"`
-	Path          string            `json:"path"`
-	CapacityBytes int64             `json:"capacityBytes,omitempty"`
-	Params        map[string]string `json:"params"`
+	SchemaVersion        int               `json:"schemaVersion,omitempty"`
+	State                string            `json:"state,omitempty"`
+	VolumeID             string            `json:"volumeID"`
+	Provider             string            `json:"provider"`
+	Path                 string            `json:"path,omitempty"`
+	PlannedCapacityBytes int64             `json:"plannedCapacityBytes,omitempty"`
+	CapacityBytes        int64             `json:"capacityBytes,omitempty"`
+	Params               map[string]string `json:"params"`
+	Metadata             map[string]string `json:"metadata,omitempty"`
+	RequestFingerprint   string            `json:"requestFingerprint,omitempty"`
+	OperationID          string            `json:"operationID,omitempty"`
 }
 
-// volumeManifest is a lightweight params backup used when individual volume
-// records are missing but the store directory (or a mounted bootstrap file)
-// still has provider configuration.
+// volumeManifest keeps only non-secret provider bootstrap parameters so a
+// controller can reconcile cloud-tagged volumes after loss of one record.
 type volumeManifest struct {
 	Params    map[string]string `json:"params"`
 	VolumeIDs []string          `json:"volumeIDs"`
@@ -44,27 +51,213 @@ type volumeStore struct {
 	dir string
 }
 
-func newVolumeStore() *volumeStore {
+func newVolumeStore() (*volumeStore, error) {
 	dir := os.Getenv("CSI_VOLUME_STORE_DIR")
 	if dir == "" {
 		dir = defaultVolumeStoreDir
 	}
-	os.MkdirAll(dir, 0700)
-	return &volumeStore{dir: dir}
+	return newVolumeStoreAt(dir)
+}
+
+func newVolumeStoreAt(dir string) (*volumeStore, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create volume store: %w", err)
+	}
+	return &volumeStore{dir: filepath.Clean(dir)}, nil
+}
+
+func validateVolumeStoreKey(volumeID string) error {
+	if volumeID == "" || strings.TrimSpace(volumeID) != volumeID || len(volumeID) > 253 ||
+		filepath.Base(volumeID) != volumeID || volumeID == "." || volumeID == ".." || strings.Contains(volumeID, `\`) {
+		return fmt.Errorf("invalid volume store key %q", volumeID)
+	}
+	return nil
+}
+
+func (vs *volumeStore) path(volumeID string) (string, error) {
+	if err := validateVolumeStoreKey(volumeID); err != nil {
+		return "", err
+	}
+	return filepath.Join(vs.dir, volumeID+".json"), nil
 }
 
 func (vs *volumeStore) manifestPath() string {
 	return filepath.Join(vs.dir, manifestFileName)
 }
 
-// BootstrapParams resolves cloud provider parameters for recovery and
-// fallback operations when a specific volume record may be missing.
-//
-// Priority:
-//  1. Params from any surviving volume record
-//  2. Params from _manifest.json in the volume store
-//  3. JSON file pointed to by CSI_BOOTSTRAP_PARAMS_FILE
-//  4. Well-known environment variables (CSI_CLOUD_PROVIDER, etc.)
+func validateVolumeRecord(rec *volumeRecord) error {
+	if rec == nil {
+		return errors.New("volume record is nil")
+	}
+	if err := validateVolumeStoreKey(rec.VolumeID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(rec.Provider) == "" || strings.TrimSpace(rec.Provider) != rec.Provider {
+		return errors.New("volume record has an invalid provider")
+	}
+	if rec.Params == nil {
+		return errors.New("volume record has no provider parameters")
+	}
+
+	// Schema zero is the upstream recovery/legacy ready-record shape. It is
+	// readable but never used for a new cloud mutation.
+	if rec.SchemaVersion == 0 {
+		if rec.State != "" || strings.TrimSpace(rec.Path) == "" || strings.TrimSpace(rec.Path) != rec.Path {
+			return errors.New("legacy volume record has an invalid cloud volume path")
+		}
+		if rec.CapacityBytes <= 0 {
+			return errors.New("legacy volume record has an invalid capacity")
+		}
+		return nil
+	}
+	if rec.SchemaVersion != volumeRecordSchemaVersion {
+		return fmt.Errorf("unsupported volume record schema version %d", rec.SchemaVersion)
+	}
+	if len(rec.RequestFingerprint) != sha256HexLength || !isHex(rec.RequestFingerprint) {
+		return errors.New("volume record has an invalid request fingerprint")
+	}
+	if rec.PlannedCapacityBytes <= 0 {
+		return errors.New("volume record has an invalid planned capacity")
+	}
+
+	switch rec.State {
+	case volumeRecordStatePending:
+		if len(rec.OperationID) != operationIDHexLength || !isHex(rec.OperationID) {
+			return errors.New("pending volume record has an invalid operation ID")
+		}
+		if rec.Path != "" || rec.CapacityBytes != 0 {
+			return errors.New("pending volume record contains ready state")
+		}
+	case volumeRecordStateReady:
+		if rec.OperationID != "" && (len(rec.OperationID) != operationIDHexLength || !isHex(rec.OperationID)) {
+			return errors.New("ready volume record has an invalid operation ID")
+		}
+		if strings.TrimSpace(rec.Path) == "" || strings.TrimSpace(rec.Path) != rec.Path {
+			return errors.New("ready volume record has an invalid cloud volume path")
+		}
+		if rec.CapacityBytes <= 0 {
+			return errors.New("ready volume record has an invalid capacity")
+		}
+	default:
+		return fmt.Errorf("volume record has invalid state %q", rec.State)
+	}
+	return nil
+}
+
+func (vs *volumeStore) Exists(volumeID string) (bool, error) {
+	_, err := vs.Load(volumeID)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (vs *volumeStore) Save(rec *volumeRecord) error {
+	if err := validateVolumeRecord(rec); err != nil {
+		return fmt.Errorf("refuse to persist invalid volume record: %w", err)
+	}
+	path, err := vs.path(rec.VolumeID)
+	if err != nil {
+		return err
+	}
+
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	if err := writeJSONAtomic(path, rec); err != nil {
+		return fmt.Errorf("persist volume record: %w", err)
+	}
+	return vs.writeManifestLocked()
+}
+
+func (vs *volumeStore) Load(volumeID string) (*volumeRecord, error) {
+	path, err := vs.path(volumeID)
+	if err != nil {
+		return nil, err
+	}
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	return loadVolumeRecord(path, volumeID)
+}
+
+func loadVolumeRecord(path, expectedVolumeID string) (*volumeRecord, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var rec volumeRecord
+	if err := json.NewDecoder(file).Decode(&rec); err != nil {
+		return nil, fmt.Errorf("decode volume record: %w", err)
+	}
+	if rec.VolumeID != expectedVolumeID {
+		return nil, fmt.Errorf("volume record identity %q does not match key %q", rec.VolumeID, expectedVolumeID)
+	}
+	if err := validateVolumeRecord(&rec); err != nil {
+		return nil, fmt.Errorf("invalid volume record: %w", err)
+	}
+	return &rec, nil
+}
+
+func (vs *volumeStore) Delete(volumeID string) error {
+	path, err := vs.path(volumeID)
+	if err != nil {
+		return err
+	}
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove volume record: %w", err)
+	}
+	if err := syncDirectory(vs.dir); err != nil {
+		return fmt.Errorf("sync volume store directory: %w", err)
+	}
+	return vs.writeManifestLocked()
+}
+
+func writeJSONAtomic(path string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	temporary, err := os.CreateTemp(dir, ".volume-store-*")
+	if err != nil {
+		return err
+	}
+	temporaryName := temporary.Name()
+	defer func() {
+		temporary.Close()
+		_ = os.Remove(temporaryName)
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryName, path); err != nil {
+		return err
+	}
+	return syncDirectory(dir)
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+// BootstrapParams resolves non-secret provider parameters for recovery.
 func (vs *volumeStore) BootstrapParams() map[string]string {
 	if params := vs.AnyParams(); params != nil {
 		return params
@@ -78,308 +271,169 @@ func (vs *volumeStore) BootstrapParams() map[string]string {
 	return paramsFromEnv()
 }
 
-// RecoverFromCloud rebuilds missing local volume records from cloud-tagged
-// volumes. Called at startup and before operations that need a local record.
+// RecoverFromCloud rebuilds legacy ready records for volumes already tagged by
+// a provider. It never starts a cloud mutation and never overwrites pending
+// operation identity.
 func (vs *volumeStore) RecoverFromCloud(params map[string]string) error {
 	if params == nil || params["cloudProvider"] == "" {
-		vsLogger.Printf("No cloud provider params available, skipping cloud recovery")
 		return nil
 	}
-
 	p, err := provider.NewBlockVolumeProvider(params)
 	if err != nil {
 		return fmt.Errorf("creating provider for recovery: %w", err)
 	}
-
 	lister, ok := p.(provider.VolumeRecoverer)
 	if !ok {
-		vsLogger.Printf("Provider %q does not support VolumeRecoverer, skipping", params["cloudProvider"])
 		return nil
 	}
-
-	vols, err := lister.ListManagedVolumes()
+	volumes, err := lister.ListManagedVolumes()
 	if err != nil {
 		return fmt.Errorf("listing managed volumes from cloud: %w", err)
 	}
 
-	// Never persist long-lived credentials into the node-local store.
-	paramsCopy := sanitizePersistableParams(params)
-
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
-
-	recovered := 0
-	for _, vol := range vols {
-		if vol.VolumeID == "" {
+	params = sanitizePersistableParams(params)
+	for _, volume := range volumes {
+		if validateVolumeStoreKey(volume.VolumeID) != nil || volume.SizeBytes <= 0 ||
+			strings.TrimSpace(volume.Provider) == "" || strings.TrimSpace(volume.Path) == "" {
 			continue
 		}
-		path := filepath.Join(vs.dir, vol.VolumeID+".json")
+		path, _ := vs.path(volume.VolumeID)
 		if _, err := os.Stat(path); err == nil {
 			continue
-		} else if err != nil && !os.IsNotExist(err) {
-			vsLogger.Printf("skipping recovery for %s: stat %s: %v", vol.VolumeID, path, err)
+		} else if !errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-
-		rec := &volumeRecord{
-			VolumeID:      vol.VolumeID,
-			Provider:      vol.Provider,
-			Path:          vol.Path,
-			CapacityBytes: vol.SizeBytes,
-			Params:        paramsCopy,
+		record := &volumeRecord{
+			VolumeID: volume.VolumeID, Provider: volume.Provider, Path: volume.Path,
+			CapacityBytes: volume.SizeBytes, Params: maps.Clone(params),
 		}
-		data, err := json.Marshal(rec)
-		if err != nil {
-			vsLogger.Printf("failed to marshal recovered volume %s: %v", vol.VolumeID, err)
-			continue
+		if err := writeJSONAtomic(path, record); err != nil {
+			return fmt.Errorf("persist recovered volume %s: %w", volume.VolumeID, err)
 		}
-		if err := os.WriteFile(path, data, 0600); err != nil {
-			vsLogger.Printf("failed to write recovered volume %s: %v", vol.VolumeID, err)
-			continue
-		}
-		recovered++
-		vsLogger.Printf("Recovered volume %s from cloud (path=%s)", vol.VolumeID, vol.Path)
-	}
-
-	if recovered > 0 {
-		vsLogger.Printf("Recovered %d volume(s) from cloud provider", recovered)
-		// Refresh manifest under the same lock so VolumeIDs stay accurate.
-		if err := vs.writeManifestLocked(); err != nil {
-			vsLogger.Printf("failed to write volume manifest after recovery: %v", err)
-		}
-	}
-	return nil
-}
-
-// Exists checks whether a volume record exists in the store.
-// Returns (false, nil) if the file simply doesn't exist, or (false, err)
-// if the check failed due to a permission or I/O error.
-func (vs *volumeStore) Exists(volumeID string) (bool, error) {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-	_, err := os.Stat(filepath.Join(vs.dir, volumeID+".json"))
-	if err == nil {
-		return true, nil
-	}
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	return false, err
-}
-
-func (vs *volumeStore) Save(rec *volumeRecord) error {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-
-	data, err := json.Marshal(rec)
-	if err != nil {
-		return fmt.Errorf("failed to marshal volume record: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(vs.dir, rec.VolumeID+".json"), data, 0600); err != nil {
-		return err
 	}
 	return vs.writeManifestLocked()
 }
 
-func (vs *volumeStore) Load(volumeID string) (*volumeRecord, error) {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-
-	data, err := os.ReadFile(filepath.Join(vs.dir, volumeID+".json"))
-	if err != nil {
-		return nil, err
-	}
-	var rec volumeRecord
-	if err := json.Unmarshal(data, &rec); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal volume record: %w", err)
-	}
-	return &rec, nil
-}
-
-func (vs *volumeStore) Delete(volumeID string) {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-	os.Remove(filepath.Join(vs.dir, volumeID+".json"))
-	if err := vs.writeManifestLocked(); err != nil {
-		vsLogger.Printf("failed to write volume manifest after delete: %v", err)
-	}
-}
-
-// AnyParams returns the Params map from any volume in the store, or nil.
 func (vs *volumeStore) AnyParams() map[string]string {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
-
 	entries, err := os.ReadDir(vs.dir)
 	if err != nil {
 		return nil
 	}
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) != ".json" || e.Name() == manifestFileName {
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".json" || entry.Name() == manifestFileName {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(vs.dir, e.Name()))
-		if err != nil {
-			continue
-		}
-		var rec volumeRecord
-		if err := json.Unmarshal(data, &rec); err != nil {
-			continue
-		}
-		if len(rec.Params) > 0 && rec.Params["cloudProvider"] != "" {
-			return maps.Clone(rec.Params)
+		volumeID := strings.TrimSuffix(entry.Name(), ".json")
+		record, err := loadVolumeRecord(filepath.Join(vs.dir, entry.Name()), volumeID)
+		if err == nil && record.Params["cloudProvider"] != "" {
+			return maps.Clone(record.Params)
 		}
 	}
 	return nil
 }
 
-// listAll returns all volume records. Caller must hold vs.mu.
-func (vs *volumeStore) listAll() ([]*volumeRecord, error) {
+func (vs *volumeStore) listAllLocked() ([]*volumeRecord, error) {
 	entries, err := os.ReadDir(vs.dir)
 	if err != nil {
 		return nil, err
 	}
-	var recs []*volumeRecord
-	for _, e := range entries {
-		if filepath.Ext(e.Name()) != ".json" || e.Name() == manifestFileName {
+	records := make([]*volumeRecord, 0, len(entries))
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".json" || entry.Name() == manifestFileName {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(vs.dir, e.Name()))
-		if err != nil {
-			continue
+		volumeID := strings.TrimSuffix(entry.Name(), ".json")
+		record, err := loadVolumeRecord(filepath.Join(vs.dir, entry.Name()), volumeID)
+		if err == nil {
+			records = append(records, record)
 		}
-		var rec volumeRecord
-		if err := json.Unmarshal(data, &rec); err != nil {
-			continue
-		}
-		recs = append(recs, &rec)
 	}
-	return recs, nil
+	return records, nil
 }
 
-// writeManifestLocked updates or removes _manifest.json. Caller must hold vs.mu.
 func (vs *volumeStore) writeManifestLocked() error {
-	recs, err := vs.listAll()
+	records, err := vs.listAllLocked()
 	if err != nil {
 		return err
 	}
-
-	path := vs.manifestPath()
-	if len(recs) == 0 {
-		// Keep a params-only manifest if one already exists so empty-store
-		// recovery can still bootstrap after the last volume is deleted.
-		existing, loadErr := vs.readManifestLocked()
-		if loadErr != nil || existing == nil || len(existing.Params) == 0 || existing.Params["cloudProvider"] == "" {
-			_ = os.Remove(path)
-			return nil
+	manifest := volumeManifest{}
+	for _, record := range records {
+		manifest.VolumeIDs = append(manifest.VolumeIDs, record.VolumeID)
+		if manifest.Params == nil && record.Params["cloudProvider"] != "" {
+			manifest.Params = sanitizePersistableParams(record.Params)
 		}
-		existing.VolumeIDs = nil
-		data, err := json.Marshal(existing)
-		if err != nil {
+	}
+	if manifest.Params == nil {
+		if existing, err := vs.readManifestLocked(); err == nil {
+			manifest.Params = sanitizePersistableParams(existing.Params)
+		}
+	}
+	if len(manifest.Params) == 0 {
+		if err := os.Remove(vs.manifestPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		return os.WriteFile(path, data, 0600)
+		return syncDirectory(vs.dir)
 	}
-
-	var params map[string]string
-	for _, r := range recs {
-		if len(r.Params) > 0 && r.Params["cloudProvider"] != "" {
-			params = sanitizePersistableParams(r.Params)
-			break
-		}
-	}
-	if params == nil {
-		// Prefer keeping previously valid bootstrap params over writing an unusable manifest.
-		if existing, loadErr := vs.readManifestLocked(); loadErr == nil && existing != nil &&
-			len(existing.Params) > 0 && existing.Params["cloudProvider"] != "" {
-			params = sanitizePersistableParams(existing.Params)
-		} else {
-			params = map[string]string{}
-		}
-	}
-
-	m := volumeManifest{
-		Params:    params,
-		VolumeIDs: make([]string, 0, len(recs)),
-	}
-	for _, r := range recs {
-		m.VolumeIDs = append(m.VolumeIDs, r.VolumeID)
-	}
-
-	data, err := json.Marshal(m)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0600)
+	return writeJSONAtomic(vs.manifestPath(), &manifest)
 }
 
 func (vs *volumeStore) readManifestLocked() (*volumeManifest, error) {
-	data, err := os.ReadFile(vs.manifestPath())
+	file, err := os.Open(vs.manifestPath())
 	if err != nil {
 		return nil, err
 	}
-	var m volumeManifest
-	if err := json.Unmarshal(data, &m); err != nil {
+	defer file.Close()
+	var manifest volumeManifest
+	if err := json.NewDecoder(file).Decode(&manifest); err != nil {
 		return nil, err
 	}
-	return &m, nil
+	return &manifest, nil
 }
 
 func (vs *volumeStore) loadManifestParams() map[string]string {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
-
-	m, err := vs.readManifestLocked()
-	if err != nil || m == nil || len(m.Params) == 0 || m.Params["cloudProvider"] == "" {
+	manifest, err := vs.readManifestLocked()
+	if err != nil || manifest.Params["cloudProvider"] == "" {
 		return nil
 	}
-	vsLogger.Printf("Loaded bootstrap params from %s", manifestFileName)
-	return maps.Clone(m.Params)
+	return maps.Clone(manifest.Params)
 }
 
 func loadBootstrapParamsFile() map[string]string {
-	path := os.Getenv(bootstrapParamsEnv)
+	path := strings.TrimSpace(os.Getenv(bootstrapParamsEnv))
 	if path == "" {
 		return nil
 	}
-	data, err := os.ReadFile(path)
+	file, err := os.Open(path)
 	if err != nil {
-		vsLogger.Printf("failed to read %s=%s: %v", bootstrapParamsEnv, path, err)
+		vsLogger.Printf("failed to read bootstrap params: %v", err)
 		return nil
 	}
+	defer file.Close()
 	var params map[string]string
-	if err := json.Unmarshal(data, &params); err != nil {
-		vsLogger.Printf("failed to parse bootstrap params file %s: %v", path, err)
+	if err := json.NewDecoder(file).Decode(&params); err != nil || params["cloudProvider"] == "" {
+		vsLogger.Printf("invalid bootstrap params file")
 		return nil
 	}
-	if params["cloudProvider"] == "" {
-		vsLogger.Printf("bootstrap params file %s missing cloudProvider", path)
-		return nil
-	}
-	vsLogger.Printf("Loaded bootstrap params from %s", path)
-	return params
+	return sanitizePersistableParams(params)
 }
 
-// paramsFromEnv builds StorageClass-compatible params from environment variables
-// so recovery/delete can work on a node whose hostPath store is empty.
 func paramsFromEnv() map[string]string {
-	cloudProvider := firstNonEmpty(
-		os.Getenv("CSI_CLOUD_PROVIDER"),
-		os.Getenv("CLOUD_PROVIDER"),
-	)
+	cloudProvider := firstNonEmpty(os.Getenv("CSI_CLOUD_PROVIDER"), os.Getenv("CLOUD_PROVIDER"))
 	if cloudProvider == "" {
 		return nil
 	}
-
 	params := map[string]string{"cloudProvider": cloudProvider}
-
 	switch cloudProvider {
 	case "aws":
 		setIfNonEmpty(params, "awsRegion", firstNonEmpty(os.Getenv("CSI_AWS_REGION"), os.Getenv("AWS_REGION")))
 		setIfNonEmpty(params, "awsAvailabilityZone", firstNonEmpty(os.Getenv("CSI_AWS_AVAILABILITY_ZONE"), os.Getenv("AWS_AVAILABILITY_ZONE")))
 		setIfNonEmpty(params, "awsVolumeType", os.Getenv("CSI_AWS_VOLUME_TYPE"))
-		// Intentionally omit static AWS keys — use IRSA / the AWS SDK default chain
-		// (AWS_ACCESS_KEY_ID, instance profile, etc.) instead of persisting secrets.
 		setIfNonEmpty(params, "awsKmsKeyId", os.Getenv("CSI_AWS_KMS_KEY_ID"))
 	case "azure":
 		setIfNonEmpty(params, "azureSubscriptionId", firstNonEmpty(os.Getenv("CSI_AZURE_SUBSCRIPTION_ID"), os.Getenv("AZURE_SUBSCRIPTION_ID")))
@@ -390,15 +444,13 @@ func paramsFromEnv() map[string]string {
 	case "libvirt":
 		setIfNonEmpty(params, "cloudProviderVolumePath", firstNonEmpty(os.Getenv("CSI_LIBVIRT_VOLUME_PATH"), os.Getenv("CLOUD_PROVIDER_VOLUME_PATH")))
 	}
-
-	vsLogger.Printf("Loaded bootstrap params from environment (provider=%s)", cloudProvider)
 	return params
 }
 
 func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
+	for _, value := range values {
+		if value != "" {
+			return value
 		}
 	}
 	return ""
@@ -410,14 +462,18 @@ func setIfNonEmpty(params map[string]string, key, value string) {
 	}
 }
 
-// sanitizePersistableParams returns a copy of params safe to write under the
-// node-local volume store (no long-lived cloud credentials).
 func sanitizePersistableParams(params map[string]string) map[string]string {
 	if params == nil {
 		return nil
 	}
-	out := maps.Clone(params)
-	delete(out, "awsAccessKeyId")
-	delete(out, "awsSecretKey")
-	return out
+	result := maps.Clone(params)
+	for key := range result {
+		normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", ""), "_", ""))
+		if strings.Contains(normalized, "accesskey") || strings.Contains(normalized, "secret") ||
+			strings.Contains(normalized, "securitytoken") || strings.Contains(normalized, "password") ||
+			strings.Contains(normalized, "credential") {
+			delete(result, key)
+		}
+	}
+	return result
 }
