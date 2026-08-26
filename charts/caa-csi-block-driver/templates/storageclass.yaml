@@ -25,6 +25,16 @@ parameters:
   {{- if eq .Values.provider "libvirt" }}
   cloudProviderVolumePath: {{ .Values.libvirt.volumeDir | quote }}
   {{- end }}
+  {{- if eq .Values.provider "alibabacloud" }}
+  region: {{ required "alibabacloud.region is required" .Values.alibabacloud.region | quote }}
+  zoneId: {{ required "alibabacloud.zoneId is required" .Values.alibabacloud.zoneId | quote }}
+  clusterId: {{ required "alibabacloud.clusterId is required" .Values.alibabacloud.clusterId | quote }}
+  diskCategory: {{ .Values.alibabacloud.diskCategory | quote }}
+  performanceLevel: {{ .Values.alibabacloud.performanceLevel | quote }}
+  {{- with .Values.alibabacloud.resourceGroupId }}
+  resourceGroupId: {{ . | quote }}
+  {{- end }}
+  {{- end }}
   {{- if .Values.cdh.enabled }}
   encrypt-type: {{ .Values.cdh.encryptionType | quote }}
   kbs-key-id: {{ required "cdh.key must be set when cdh.enabled=true" .Values.cdh.key | quote }}

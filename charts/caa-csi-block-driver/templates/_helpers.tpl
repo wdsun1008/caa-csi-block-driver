@@ -5,6 +5,15 @@
 {{- if and (eq .Values.provider "aws") .Values.aws.irsa.enabled (not .Values.aws.irsa.roleArn) }}
 {{- fail "aws.irsa.roleArn is required when aws.irsa.enabled=true" }}
 {{- end }}
+{{- if and (eq .Values.provider "alibabacloud") .Values.alibabacloud.rrsa.enabled .Values.alibabacloud.credentialsSecret }}
+{{- fail "alibabacloud.rrsa.enabled and alibabacloud.credentialsSecret are mutually exclusive" }}
+{{- end }}
+{{- if and (eq .Values.provider "alibabacloud") .Values.alibabacloud.rrsa.enabled (not .Values.alibabacloud.rrsa.roleArn) }}
+{{- fail "alibabacloud.rrsa.roleArn is required when RRSA is enabled" }}
+{{- end }}
+{{- if and (eq .Values.provider "alibabacloud") .Values.alibabacloud.rrsa.enabled (not .Values.alibabacloud.rrsa.oidcProviderArn) }}
+{{- fail "alibabacloud.rrsa.oidcProviderArn is required when RRSA is enabled" }}
+{{- end }}
 {{- end }}
 
 {{- define "caa-csi.name" -}}

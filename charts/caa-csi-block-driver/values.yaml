@@ -1,4 +1,4 @@
-# Cloud provider: aws, azure, or libvirt
+# Cloud provider: alibabacloud, aws, azure, or libvirt
 provider: aws
 
 nameOverride: ""
@@ -42,6 +42,22 @@ azure:
 # Libvirt provider settings
 libvirt:
   volumeDir: /var/lib/caa-csi-volumes
+
+# Alibaba Cloud ESSD settings
+alibabacloud:
+  region: ""
+  zoneId: ""
+  clusterId: ""
+  diskCategory: cloud_essd
+  performanceLevel: PL0
+  resourceGroupId: ""
+  # Leave empty to use RRSA or the Alibaba Cloud default credential chain.
+  credentialsSecret: ""
+  rrsa:
+    enabled: false
+    roleArn: ""
+    oidcProviderArn: ""
+    tokenFile: /var/run/secrets/ack.alibabacloud.com/rrsa-tokens/token
 
 # CDH encryption settings (optional, for LUKS via CAA).
 # kbs-key-id is the KBS path without the kbs:/// prefix.

@@ -89,6 +89,32 @@ spec:
                   name: {{ .Values.aws.staticCredentials.secretName }}
                   key: AWS_SECRET_ACCESS_KEY
             {{- end }}
+            {{- else if eq .Values.provider "alibabacloud" }}
+            {{- if and (eq .Values.provider "alibabacloud") .Values.alibabacloud.rrsa.enabled }}
+            - name: ALIBABA_CLOUD_ROLE_ARN
+              value: {{ .Values.alibabacloud.rrsa.roleArn | quote }}
+            - name: ALIBABA_CLOUD_OIDC_PROVIDER_ARN
+              value: {{ .Values.alibabacloud.rrsa.oidcProviderArn | quote }}
+            - name: ALIBABA_CLOUD_OIDC_TOKEN_FILE
+              value: {{ .Values.alibabacloud.rrsa.tokenFile | quote }}
+            {{- else if .Values.alibabacloud.credentialsSecret }}
+            - name: ALIBABA_CLOUD_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.alibabacloud.credentialsSecret }}
+                  key: ALIBABA_CLOUD_ACCESS_KEY_ID
+            - name: ALIBABA_CLOUD_ACCESS_KEY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.alibabacloud.credentialsSecret }}
+                  key: ALIBABA_CLOUD_ACCESS_KEY_SECRET
+            - name: ALIBABA_CLOUD_SECURITY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.alibabacloud.credentialsSecret }}
+                  key: ALIBABA_CLOUD_SECURITY_TOKEN
+                  optional: true
+            {{- end }}
             {{- end }}
           {{- with .Values.resources.driver }}
           resources:
@@ -106,6 +132,11 @@ spec:
             - mountPath: /etc/caa-csi-block
               name: bootstrap-params
               readOnly: true
+            {{- if and (eq .Values.provider "alibabacloud") .Values.alibabacloud.rrsa.enabled }}
+            - mountPath: /var/run/secrets/ack.alibabacloud.com/rrsa-tokens
+              name: rrsa-oidc-token
+              readOnly: true
+            {{- end }}
             {{- if eq .Values.provider "libvirt" }}
             - mountPath: {{ .Values.libvirt.volumeDir }}
               name: libvirt-pool
@@ -119,6 +150,16 @@ spec:
         - name: bootstrap-params
           configMap:
             name: {{ include "caa-csi.bootstrapConfigMapName" . }}
+        {{- if and (eq .Values.provider "alibabacloud") .Values.alibabacloud.rrsa.enabled }}
+        - name: rrsa-oidc-token
+          projected:
+            defaultMode: 420
+            sources:
+              - serviceAccountToken:
+                  audience: sts.aliyuncs.com
+                  expirationSeconds: 3600
+                  path: token
+        {{- end }}
         {{- if eq .Values.provider "libvirt" }}
         - name: libvirt-pool
           hostPath:

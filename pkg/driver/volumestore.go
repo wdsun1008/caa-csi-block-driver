@@ -443,6 +443,13 @@ func paramsFromEnv() map[string]string {
 		setIfNonEmpty(params, "azureDiskEncryptionSetId", os.Getenv("CSI_AZURE_DISK_ENCRYPTION_SET_ID"))
 	case "libvirt":
 		setIfNonEmpty(params, "cloudProviderVolumePath", firstNonEmpty(os.Getenv("CSI_LIBVIRT_VOLUME_PATH"), os.Getenv("CLOUD_PROVIDER_VOLUME_PATH")))
+	case "alibabacloud":
+		setIfNonEmpty(params, "region", os.Getenv("CSI_ALIBABA_REGION"))
+		setIfNonEmpty(params, "zoneId", os.Getenv("CSI_ALIBABA_ZONE_ID"))
+		setIfNonEmpty(params, "clusterId", os.Getenv("CSI_ALIBABA_CLUSTER_ID"))
+		setIfNonEmpty(params, "diskCategory", os.Getenv("CSI_ALIBABA_DISK_CATEGORY"))
+		setIfNonEmpty(params, "performanceLevel", os.Getenv("CSI_ALIBABA_PERFORMANCE_LEVEL"))
+		setIfNonEmpty(params, "resourceGroupId", os.Getenv("CSI_ALIBABA_RESOURCE_GROUP_ID"))
 	}
 	return params
 }
