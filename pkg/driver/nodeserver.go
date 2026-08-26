@@ -27,10 +27,14 @@ import (
 
 var nsLogger = log.New(log.Writer(), "[caa-csi/node] ", log.LstdFlags|log.Lmsgprefix)
 
+var removeAllPath = os.RemoveAll
+
 const (
 	defaultKataDirectVolumeRootPath = "/run/kata-containers/shared/direct-volumes"
+	defaultKubeletRootPath          = "/var/lib/kubelet"
 	mountInfoFileName               = "mountInfo.json"
 	volumeStatsTimeout              = 10 * time.Second
+	csiSanityTargetPathEnv          = "CSI_SANITY_TARGET_PATH"
 )
 
 func getKataDirectVolumeRootPath() string {
@@ -47,12 +51,11 @@ func getKataRuntimePath() string {
 	return "kata-runtime"
 }
 
-type mountInfoJSON struct {
-	VolumeType string            `json:"volume-type"`
-	Device     string            `json:"device"`
-	FsType     string            `json:"fstype"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	Options    []string          `json:"options,omitempty"`
+func getKubeletRootPath() string {
+	if path := strings.TrimSpace(os.Getenv("KUBELET_ROOT_PATH")); path != "" {
+		return filepath.Clean(path)
+	}
+	return defaultKubeletRootPath
 }
 
 type nodeServer struct {
@@ -123,47 +126,103 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	if req.GetVolumeCapability() == nil {
 		return nil, status.Error(codes.InvalidArgument, "Volume capability missing")
 	}
+	targetPodUID, validTarget := podUIDFromTargetPath(targetPath)
+	if !validTarget {
+		return nil, status.Errorf(codes.InvalidArgument, "target path %q is not a canonical kubelet CSI mount path", targetPath)
+	}
 
 	ns.mu.Lock()
 	devicePath := ns.devices[volumeID]
 	ns.mu.Unlock()
 
 	if devicePath == "" {
+		// Kubelet may replay NodePublish after a node-plugin restart without
+		// replaying NodeStage first. The controller-provided cloud identity is
+		// sufficient to rebuild direct-volume metadata.
+		devicePath = strings.TrimSpace(req.GetVolumeContext()["cloud-volume-path"])
+		if devicePath != "" {
+			ns.mu.Lock()
+			ns.devices[volumeID] = devicePath
+			ns.mu.Unlock()
+		}
+	}
+	if devicePath == "" {
 		return nil, status.Errorf(codes.FailedPrecondition, "volume %s not staged (no device path)", volumeID)
 	}
 
-	attrib := req.GetVolumeContext()
-	if attrib == nil {
-		attrib = make(map[string]string)
+	attrib := make(map[string]string, len(req.GetVolumeContext())+1)
+	for key, value := range req.GetVolumeContext() {
+		attrib[key] = value
 	}
-
-	attrib["cloud-volume-id"] = volumeID
 	if attrib["cloud-volume-path"] == "" {
 		attrib["cloud-volume-path"] = devicePath
 	}
-
-	info := mountInfoJSON{
-		VolumeType: "directvol",
-		Device:     devicePath,
-		FsType:     "ext4",
-		Metadata:   attrib,
+	providerName := strings.TrimSpace(attrib["cloud-provider"])
+	if providerName == "" {
+		providerName = strings.TrimSpace(attrib["cloudProvider"])
+	}
+	if providerName != "" {
+		attrib["cloud-provider"] = providerName
 	}
 
-	data, err := json.Marshal(info)
+	mount := req.GetVolumeCapability().GetMount()
+	if mount == nil {
+		return nil, status.Error(codes.InvalidArgument, "raw block volumes are not supported")
+	}
+	mode := req.GetVolumeCapability().GetAccessMode().GetMode()
+	readerOnly := mode == csi.VolumeCapability_AccessMode_SINGLE_NODE_READER_ONLY ||
+		mode == csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY
+	readOnly := req.GetReadonly() || readerOnly
+	options, readOnly, err := normalizeMountOptions(mount.GetMountFlags(), readOnly)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to marshal mountInfo: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid mount flags: %v", err)
+	}
+	fsType, err := normalizeFilesystemType(mount.GetFsType())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+	if volumeType := strings.TrimSpace(attrib["volume-type"]); volumeType != "" && volumeType != "block" {
+		return nil, status.Errorf(codes.InvalidArgument, "volume type %q is not supported", volumeType)
+	}
+	podUID := strings.TrimSpace(attrib["csi.storage.k8s.io/pod.uid"])
+	if podUID != "" && podUID != targetPodUID {
+		return nil, status.Errorf(codes.InvalidArgument, "pod UID %q does not match target path pod UID %q", podUID, targetPodUID)
+	}
+	podUID = targetPodUID
+	fsGroup, err := normalizeFSGroup(mount.GetVolumeMountGroup())
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	info := directVolumeMetadata{
+		Version:      directVolumeMetadataVersion,
+		VolumeType:   "block",
+		VolumeMode:   directVolumeModeFilesystem,
+		Device:       devicePath,
+		FsType:       fsType,
+		ReadOnly:     readOnly,
+		Options:      options,
+		FSGroup:      fsGroup,
+		PodUID:       podUID,
+		VolumeHandle: volumeID,
+		Metadata:     directVolumeMetadataContext(attrib),
 	}
 
 	volumeDir := filepath.Join(getKataDirectVolumeRootPath(), b64.URLEncoding.EncodeToString([]byte(targetPath)))
-	if err := os.MkdirAll(volumeDir, 0700); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create kata direct volume dir %s: %v", volumeDir, err)
-	}
-	if err := os.WriteFile(filepath.Join(volumeDir, mountInfoFileName), data, 0600); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to write mountInfo.json: %v", err)
-	}
-
+	metadataPath := filepath.Join(volumeDir, mountInfoFileName)
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
 	if err := os.MkdirAll(targetPath, 0750); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create target path %s: %v", targetPath, err)
+	}
+	if existing, err := readDirectVolumeMetadata(metadataPath); err == nil {
+		if !directVolumeMetadataEqual(*existing, info) {
+			return nil, status.Errorf(codes.AlreadyExists, "target %s is already published with incompatible properties", targetPath)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, status.Errorf(codes.Internal, "existing mountInfo.json is invalid: %v", err)
+	} else if err := writeDirectVolumeMetadataAtomic(metadataPath, info); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to publish mountInfo.json: %v", err)
 	}
 
 	nsLogger.Printf("NodePublishVolume: %s published at %s (device=%s, provider=%s)",
@@ -172,19 +231,65 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 	return &csi.NodePublishVolumeResponse{}, nil
 }
 
+func podUIDFromTargetPath(targetPath string) (string, bool) {
+	clean := filepath.Clean(targetPath)
+	if !filepath.IsAbs(targetPath) || clean != targetPath {
+		return "", false
+	}
+	relative, err := filepath.Rel(getKubeletRootPath(), clean)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	parts := strings.Split(relative, string(filepath.Separator))
+	targetLeaf := "mount"
+	// csi-sanity appends a literal "target" to its configured parent. Keep
+	// that test-only shape behind an explicit opt-in; production accepts only
+	// kubelet's canonical mount path.
+	if os.Getenv(csiSanityTargetPathEnv) == "1" {
+		targetLeaf = "target"
+	}
+	if len(parts) != 6 || parts[0] != "pods" || parts[1] == "" || parts[2] != "volumes" ||
+		parts[3] != "kubernetes.io~csi" || parts[4] == "" || parts[5] != targetLeaf {
+		return "", false
+	}
+	return parts[1], true
+}
+
 func (ns *nodeServer) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
+	if req.GetVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "Volume ID missing")
+	}
 	targetPath := req.GetTargetPath()
 	if targetPath == "" {
 		return nil, status.Error(codes.InvalidArgument, "Target path missing")
 	}
-
-	volumeDir := filepath.Join(getKataDirectVolumeRootPath(), b64.URLEncoding.EncodeToString([]byte(targetPath)))
-	if err := os.RemoveAll(volumeDir); err != nil {
-		nsLogger.Printf("WARNING: failed to remove kata direct volume dir %s: %v", volumeDir, err)
+	targetPodUID, valid := podUIDFromTargetPath(targetPath)
+	if !valid {
+		return nil, status.Errorf(codes.InvalidArgument, "target path %q is not a canonical kubelet CSI mount path", targetPath)
 	}
 
-	if err := os.RemoveAll(targetPath); err != nil {
-		nsLogger.Printf("WARNING: failed to remove target path %s: %v", targetPath, err)
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	volumeDir := filepath.Join(getKataDirectVolumeRootPath(), b64.URLEncoding.EncodeToString([]byte(targetPath)))
+	metadataPath := filepath.Join(volumeDir, mountInfoFileName)
+	if metadata, err := readDirectVolumeMetadata(metadataPath); err == nil {
+		if metadata.VolumeHandle != req.GetVolumeId() {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"target %s belongs to volume %s, not %s", targetPath, metadata.VolumeHandle, req.GetVolumeId())
+		}
+		if metadata.PodUID != targetPodUID {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"target %s belongs to pod %s, not %s", targetPath, metadata.PodUID, targetPodUID)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, status.Errorf(codes.Internal, "existing mountInfo.json is invalid: %v", err)
+	}
+	if err := removeAllPath(volumeDir); err != nil && !os.IsNotExist(err) {
+		return nil, status.Errorf(codes.Internal, "failed to remove kata direct volume dir %s: %v", volumeDir, err)
+	}
+
+	if err := removeAllPath(targetPath); err != nil && !os.IsNotExist(err) {
+		return nil, status.Errorf(codes.Internal, "failed to remove target path %s: %v", targetPath, err)
 	}
 
 	nsLogger.Printf("NodeUnpublishVolume: %s unpublished", req.GetVolumeId())

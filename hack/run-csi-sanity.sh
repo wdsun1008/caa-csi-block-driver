@@ -5,13 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BINARY="$ROOT_DIR/bin/caa-csi-block-driver"
 TEST_DIR=$(mktemp -d /tmp/csi-sanity-XXXXXX)
+CSI_SANITY_VERSION=v5.5.0
 
 cleanup() {
     if [ -n "${DRIVER_PID:-}" ] && kill -0 "$DRIVER_PID" 2>/dev/null; then
         kill "$DRIVER_PID" 2>/dev/null || true
         wait "$DRIVER_PID" 2>/dev/null || true
     fi
-    rm -rf "$TEST_DIR" /tmp/csi-test-mnt-* /tmp/csi-sanity-mnt-*
+    rm -rf "$TEST_DIR"
 }
 trap cleanup EXIT
 
@@ -21,13 +22,13 @@ if [ ! -x "$BINARY" ]; then
     exit 1
 fi
 
-if ! command -v csi-sanity &>/dev/null; then
-    echo "Installing csi-sanity..."
-    go install github.com/kubernetes-csi/csi-test/v5/cmd/csi-sanity@latest
-fi
-CSI_SANITY=$(command -v csi-sanity || echo "$(go env GOPATH)/bin/csi-sanity")
+echo "Installing csi-sanity ${CSI_SANITY_VERSION}..."
+go install "github.com/kubernetes-csi/csi-test/v5/cmd/csi-sanity@${CSI_SANITY_VERSION}"
+CSI_SANITY="$(go env GOPATH)/bin/csi-sanity"
 
-mkdir -p "$TEST_DIR"/{pool,volstore,kata-vols}
+export KUBELET_ROOT_PATH="$TEST_DIR/kubelet"
+export CSI_SANITY_TARGET_PATH=1
+mkdir -p "$TEST_DIR"/{pool,volstore,kata-vols} "$KUBELET_ROOT_PATH/pods"
 
 cat > "$TEST_DIR/params.yaml" <<EOF
 cloudProvider: libvirt
@@ -35,18 +36,34 @@ cloudProviderVolumePath: $TEST_DIR/pool
 EOF
 
 cat > "$TEST_DIR/create-path.sh" <<'SCRIPT'
-#!/bin/bash
-dir=$(mktemp -d /tmp/csi-sanity-mnt-XXXXXX)
-echo "$dir"
+#!/usr/bin/env bash
+set -euo pipefail
+: "${KUBELET_ROOT_PATH:?}"
+pod_dir=$(mktemp -d "$KUBELET_ROOT_PATH/pods/csi-sanity-pod-XXXXXX")
+volume_root="$pod_dir/volumes/kubernetes.io~csi"
+mkdir -p "$volume_root"
+mktemp -d "$volume_root/csi-sanity-volume-XXXXXX"
 SCRIPT
 
 cat > "$TEST_DIR/remove-path.sh" <<'SCRIPT'
-#!/bin/bash
-rm -rf "$1"
+#!/usr/bin/env bash
+set -euo pipefail
+: "${KUBELET_ROOT_PATH:?}"
+target="${1:?}"
+case "$target" in
+    "$KUBELET_ROOT_PATH"/pods/*/volumes/kubernetes.io~csi/*/target | \
+        "$KUBELET_ROOT_PATH"/pods/*/volumes/kubernetes.io~csi/*)
+        rm -rf -- "$target"
+        ;;
+    *)
+        echo "refusing to remove non-canonical sanity path: $target" >&2
+        exit 1
+        ;;
+esac
 SCRIPT
 
 cat > "$TEST_DIR/check-path.sh" <<'SCRIPT'
-#!/bin/bash
+#!/usr/bin/env bash
 if [ ! -e "$1" ]; then echo "not_found"
 elif [ -f "$1" ]; then echo "file"
 elif [ -d "$1" ]; then echo "directory"
@@ -57,6 +74,7 @@ chmod +x "$TEST_DIR"/*.sh
 
 KATA_DIRECT_VOLUME_ROOT_PATH="$TEST_DIR/kata-vols" \
 CSI_VOLUME_STORE_DIR="$TEST_DIR/volstore" \
+CSI_ALLOW_HOST_STATS_FALLBACK=1 \
 "$BINARY" \
     --endpoint="unix://$TEST_DIR/csi.sock" \
     --drivername=caa-csi-block.csi.confidentialcontainers.io \
@@ -73,7 +91,7 @@ echo "Driver started (PID $DRIVER_PID), running csi-sanity..."
 echo ""
 
 SKIP="Snapshot|ListVolumes|GetCapacity|ControllerPublishVolume|ControllerUnpublishVolume"
-SKIP+="|ExpandVolume|NodeExpandVolume|NodeGetVolumeStats|ModifyVolume"
+SKIP+="|ExpandVolume|NodeExpandVolume|ModifyVolume"
 SKIP+="|GroupController|volume from an existing source"
 
 "$CSI_SANITY" \
