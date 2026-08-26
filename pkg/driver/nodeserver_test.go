@@ -4,10 +4,27 @@
 package driver
 
 import (
+	"context"
 	"testing"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 )
+
+func TestNodeGetCapabilitiesAdvertisesVolumeMountGroup(t *testing.T) {
+	t.Parallel()
+
+	response, err := (&nodeServer{}).NodeGetCapabilities(context.Background(), &csi.NodeGetCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("NodeGetCapabilities failed: %v", err)
+	}
+
+	for _, capability := range response.GetCapabilities() {
+		if capability.GetRpc().GetType() == csi.NodeServiceCapability_RPC_VOLUME_MOUNT_GROUP {
+			return
+		}
+	}
+	t.Fatal("VOLUME_MOUNT_GROUP capability is not advertised")
+}
 
 func TestParseKataVolumeStats(t *testing.T) {
 	t.Parallel()
