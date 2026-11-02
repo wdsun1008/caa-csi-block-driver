@@ -98,3 +98,71 @@ func TestHelmPreservesOptionalCDHParameters(t *testing.T) {
 		}
 	}
 }
+
+func alibabaChartValues() []string {
+	return []string{
+		"provider=alibabacloud",
+		"alibabacloud.region=cn-test",
+		"alibabacloud.zoneId=cn-test-a",
+		"alibabacloud.clusterId=cluster-test",
+		"alibabacloud.credentialsSecret=aliyun-controller-credentials",
+		"controller.state.storageClassName=host-storage",
+	}
+}
+
+func TestHelmAlibabaStaticCredentialsStayOnController(t *testing.T) {
+	values := alibabaChartValues()
+	controller := renderChartTemplate(t, "templates/controller.yaml", values...)
+	for _, required := range []string{
+		"name: ALIBABA_CLOUD_ACCESS_KEY_ID", "name: ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+		"name: aliyun-controller-credentials",
+	} {
+		if !strings.Contains(controller, required) {
+			t.Fatalf("Alibaba controller render does not contain %q:\n%s", required, controller)
+		}
+	}
+
+	node := renderChartTemplate(t, "templates/daemonset.yaml", values...)
+	for _, forbidden := range []string{"ALIBABA_CLOUD_ACCESS_KEY", "aliyun-controller-credentials"} {
+		if strings.Contains(node, forbidden) {
+			t.Fatalf("Alibaba node render contains controller credential %q:\n%s", forbidden, node)
+		}
+	}
+}
+
+func TestHelmAlibabaRRSAUsesProjectedShortLivedToken(t *testing.T) {
+	values := alibabaChartValues()
+	values[4] = "alibabacloud.credentialsSecret="
+	values = append(values,
+		"alibabacloud.rrsa.enabled=true",
+		"alibabacloud.rrsa.roleArn=acs:ram::123:role/test",
+		"alibabacloud.rrsa.oidcProviderArn=acs:ram::123:oidc-provider/test",
+	)
+	controller := renderChartTemplate(t, "templates/controller.yaml", values...)
+	for _, required := range []string{
+		"name: ALIBABA_CLOUD_ROLE_ARN", "name: ALIBABA_CLOUD_OIDC_PROVIDER_ARN",
+		"name: ALIBABA_CLOUD_OIDC_TOKEN_FILE", "audience: sts.aliyuncs.com",
+		"expirationSeconds: 3600",
+	} {
+		if !strings.Contains(controller, required) {
+			t.Fatalf("RRSA render does not contain %q:\n%s", required, controller)
+		}
+	}
+	if strings.Contains(controller, "ALIBABA_CLOUD_ACCESS_KEY_ID") {
+		t.Fatalf("RRSA render contains static credentials:\n%s", controller)
+	}
+}
+
+func TestHelmAlibabaExpansionIsDisabled(t *testing.T) {
+	output := renderChartTemplate(t, "templates/storageclass.yaml", alibabaChartValues()...)
+	if !strings.Contains(output, "allowVolumeExpansion: false") {
+		t.Fatal("Alibaba expansion must be disabled")
+	}
+	args := []string{"template", "invalid-expansion", chartPath}
+	for _, value := range append(alibabaChartValues(), "storageClass.allowVolumeExpansion=true") {
+		args = append(args, "--set", value)
+	}
+	if output, err := exec.Command("helm", args...).CombinedOutput(); err == nil {
+		t.Fatalf("unsupported expansion accepted: %s", output)
+	}
+}

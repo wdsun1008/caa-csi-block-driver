@@ -22,5 +22,12 @@ data:
       "azureDiskSKU": {{ .Values.azure.diskSku | quote }}
       {{- else if eq .Values.provider "libvirt" }},
       "cloudProviderVolumePath": {{ .Values.libvirt.volumeDir | quote }}
+      {{- else if eq .Values.provider "alibabacloud" }},
+      "region": {{ required "alibabacloud.region is required" .Values.alibabacloud.region | quote }},
+      "zoneId": {{ required "alibabacloud.zoneId is required" .Values.alibabacloud.zoneId | quote }},
+      "clusterId": {{ required "alibabacloud.clusterId is required" .Values.alibabacloud.clusterId | quote }},
+      "diskCategory": {{ .Values.alibabacloud.diskCategory | quote }},
+      "performanceLevel": {{ .Values.alibabacloud.performanceLevel | quote }},
+      "resourceGroupId": {{ .Values.alibabacloud.resourceGroupId | quote }}
       {{- end }}
     }

@@ -1,0 +1,24 @@
+---
+# Source: caa-csi-block-driver/templates/bootstrap-params.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caa-csi-block-plugin-bootstrap-params
+  namespace: caa-csi-block
+  labels:
+    app.kubernetes.io/name: caa-csi-block-driver
+    app.kubernetes.io/instance: caa-csi-block
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: caa-csi-block-driver-0.2.0
+data:
+  bootstrap-params.json: |
+    {
+      "cloudProvider": "alibabacloud",
+      "region": "ALIBABA_REGION",
+      "zoneId": "ALIBABA_ZONE",
+      "clusterId": "CLUSTER_ID",
+      "diskCategory": "cloud_essd",
+      "performanceLevel": "PL0",
+      "resourceGroupId": ""
+    }

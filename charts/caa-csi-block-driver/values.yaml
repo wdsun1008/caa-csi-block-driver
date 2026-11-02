@@ -1,4 +1,4 @@
-# Cloud provider: aws, azure, or libvirt
+# Cloud provider: alibabacloud, aws, azure, or libvirt
 provider: aws
 
 nameOverride: ""
@@ -47,6 +47,22 @@ azure:
 libvirt:
   volumeDir: /var/lib/caa-csi-volumes
 
+# Alibaba Cloud ESSD settings
+alibabacloud:
+  region: ""
+  zoneId: ""
+  clusterId: ""
+  diskCategory: cloud_essd
+  performanceLevel: PL0
+  resourceGroupId: ""
+  # Leave empty to use RRSA or the Alibaba Cloud default credential chain.
+  credentialsSecret: ""
+  rrsa:
+    enabled: false
+    roleArn: ""
+    oidcProviderArn: ""
+    tokenFile: /var/run/secrets/ack.alibabacloud.com/rrsa-tokens/token
+
 # CDH encryption settings (optional, for LUKS via CAA).
 # kbs-key-id is the KBS path without the kbs:/// prefix.
 # Example: default/luks-key/volume-key
@@ -60,7 +76,8 @@ storageClass:
   name: ""
   reclaimPolicy: Delete
   volumeBindingMode: Immediate
-  allowVolumeExpansion: true
+  # null selects the provider default: false for Alibaba Cloud, true otherwise.
+  allowVolumeExpansion: null
 
 controller:
   # Required for libvirt: pin the controller and node plugin to the same host.

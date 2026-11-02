@@ -1,0 +1,23 @@
+---
+# Source: caa-csi-block-driver/templates/storageclass.yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: caa-csi-block-plugin-alibabacloud
+  labels:
+    app.kubernetes.io/name: caa-csi-block-driver
+    app.kubernetes.io/instance: caa-csi-block
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: caa-csi-block-driver-0.2.0
+provisioner: caa-csi-block.csi.confidentialcontainers.io
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
+parameters:
+  cloudProvider: alibabacloud
+  region: "ALIBABA_REGION"
+  zoneId: "ALIBABA_ZONE"
+  clusterId: "CLUSTER_ID"
+  diskCategory: "cloud_essd"
+  performanceLevel: "PL0"

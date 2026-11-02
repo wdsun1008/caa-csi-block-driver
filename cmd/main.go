@@ -12,6 +12,7 @@ import (
 
 	"github.com/confidential-devhub/caa-csi-block-driver/pkg/driver"
 
+	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/alibabacloud"
 	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/aws"
 	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/azure"
 	_ "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider/libvirt"

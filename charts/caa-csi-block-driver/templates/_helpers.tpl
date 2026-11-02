@@ -8,11 +8,26 @@
 {{- if eq .Values.controller.state.storageClassName (include "caa-csi.storageClassName" .) }}
 {{- fail "controller state cannot depend on this driver's own StorageClass" }}
 {{- end }}
+{{- if and (eq .Values.provider "alibabacloud") .Values.storageClass.allowVolumeExpansion }}
+{{- fail "Alibaba Cloud volume expansion is not supported; set storageClass.allowVolumeExpansion=false" }}
+{{- end }}
+{{- if and (eq .Values.provider "alibabacloud") .Values.alibabacloud.rrsa.enabled (ne .Values.alibabacloud.rrsa.tokenFile "/var/run/secrets/ack.alibabacloud.com/rrsa-tokens/token") }}
+{{- fail "alibabacloud.rrsa.tokenFile must match the projected token path" }}
+{{- end }}
 {{- if and (eq .Values.provider "aws") .Values.aws.irsa.enabled .Values.aws.staticCredentials.enabled }}
 {{- fail "aws.irsa.enabled and aws.staticCredentials.enabled are mutually exclusive — choose one authentication method" }}
 {{- end }}
 {{- if and (eq .Values.provider "aws") .Values.aws.irsa.enabled (not .Values.aws.irsa.roleArn) }}
 {{- fail "aws.irsa.roleArn is required when aws.irsa.enabled=true" }}
+{{- end }}
+{{- if and (eq .Values.provider "alibabacloud") .Values.alibabacloud.rrsa.enabled .Values.alibabacloud.credentialsSecret }}
+{{- fail "alibabacloud.rrsa.enabled and alibabacloud.credentialsSecret are mutually exclusive" }}
+{{- end }}
+{{- if and (eq .Values.provider "alibabacloud") .Values.alibabacloud.rrsa.enabled (not .Values.alibabacloud.rrsa.roleArn) }}
+{{- fail "alibabacloud.rrsa.roleArn is required when RRSA is enabled" }}
+{{- end }}
+{{- if and (eq .Values.provider "alibabacloud") .Values.alibabacloud.rrsa.enabled (not .Values.alibabacloud.rrsa.oidcProviderArn) }}
+{{- fail "alibabacloud.rrsa.oidcProviderArn is required when RRSA is enabled" }}
 {{- end }}
 {{- end }}
 

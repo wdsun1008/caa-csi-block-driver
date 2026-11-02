@@ -11,7 +11,11 @@ metadata:
 provisioner: {{ .Values.csiDriver.name }}
 reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
 volumeBindingMode: {{ .Values.storageClass.volumeBindingMode }}
+{{- if kindIs "invalid" .Values.storageClass.allowVolumeExpansion }}
+allowVolumeExpansion: {{ ne .Values.provider "alibabacloud" }}
+{{- else }}
 allowVolumeExpansion: {{ .Values.storageClass.allowVolumeExpansion }}
+{{- end }}
 parameters:
   cloudProvider: {{ .Values.provider }}
   {{- if eq .Values.provider "aws" }}
@@ -29,6 +33,16 @@ parameters:
   {{- end }}
   {{- if eq .Values.provider "libvirt" }}
   cloudProviderVolumePath: {{ .Values.libvirt.volumeDir | quote }}
+  {{- end }}
+  {{- if eq .Values.provider "alibabacloud" }}
+  region: {{ required "alibabacloud.region is required" .Values.alibabacloud.region | quote }}
+  zoneId: {{ required "alibabacloud.zoneId is required" .Values.alibabacloud.zoneId | quote }}
+  clusterId: {{ required "alibabacloud.clusterId is required" .Values.alibabacloud.clusterId | quote }}
+  diskCategory: {{ .Values.alibabacloud.diskCategory | quote }}
+  performanceLevel: {{ .Values.alibabacloud.performanceLevel | quote }}
+  {{- with .Values.alibabacloud.resourceGroupId }}
+  resourceGroupId: {{ . | quote }}
+  {{- end }}
   {{- end }}
   {{- if .Values.cdh.enabled }}
   encrypt-type: {{ .Values.cdh.encryptionType | quote }}
