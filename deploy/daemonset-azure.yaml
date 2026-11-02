@@ -64,6 +64,7 @@ spec:
             - "--endpoint=unix:///csi/csi.sock"
             - "--component=node"
             - "--direct-volume-metadata-version=legacy"
+            - "--guest-volume-mount-group=false"
             - "--nodeid=$(KUBE_NODE_NAME)"
           env:
             - name: KUBE_NODE_NAME

@@ -79,6 +79,8 @@ CSI_TOPOLOGY_ZONE=csi-sanity \
 "$BINARY" \
     --endpoint="unix://$TEST_DIR/csi.sock" \
     --drivername=caa-csi-block.csi.confidentialcontainers.io \
+    --direct-volume-metadata-version="${CSI_TEST_METADATA_VERSION:-legacy}" \
+    --guest-volume-mount-group="${CSI_TEST_MOUNT_GROUP:-false}" \
     --nodeid=test-node &
 DRIVER_PID=$!
 sleep 2

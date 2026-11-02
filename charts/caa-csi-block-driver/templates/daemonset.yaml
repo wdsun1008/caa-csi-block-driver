@@ -58,6 +58,7 @@ spec:
             - "--endpoint=unix:///csi/csi.sock"
             - "--component=node"
             - "--direct-volume-metadata-version={{ .Values.nodePlugin.metadataVersion }}"
+            - "--guest-volume-mount-group={{ .Values.nodePlugin.guestVolumeMountGroup }}"
             - "--nodeid=$(KUBE_NODE_NAME)"
           env:
             - name: KUBE_NODE_NAME

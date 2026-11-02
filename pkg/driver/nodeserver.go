@@ -554,6 +554,9 @@ func (ns *nodeServer) NodeGetCapabilities(_ context.Context, _ *csi.NodeGetCapab
 		csi.NodeServiceCapability_RPC_EXPAND_VOLUME,
 		csi.NodeServiceCapability_RPC_GET_VOLUME_STATS,
 	}
+	if ns.versionedMetadata && ns.guestVolumeMountGroup {
+		types = append(types, csi.NodeServiceCapability_RPC_VOLUME_MOUNT_GROUP)
+	}
 	response := &csi.NodeGetCapabilitiesResponse{}
 	for _, capability := range types {
 		response.Capabilities = append(response.Capabilities, &csi.NodeServiceCapability{

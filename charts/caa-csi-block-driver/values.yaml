@@ -118,4 +118,5 @@ resources:
 nodePlugin:
   # v1 requires a matching CAA proxy and guest; drain volumes before switching.
   metadataVersion: legacy
+  guestVolumeMountGroup: false
   privileged: true

@@ -67,13 +67,18 @@ guest filesystem or block device.
 
 `nodePlugin.metadataVersion=v1` adds explicit read-only intent, volume handle,
 Pod UID, mount options and versioned validation. Enable it only with a CAA proxy
-and guest that consume this contract. VOLUME_MOUNT_GROUP is not advertised by this change. Delegated mount-group
-requests remain disabled until a separately enabled guest implementation can
-apply the GID. Unsupported mount-group requests fail instead of being silently
-accepted.
+and guest that consume this contract. `nodePlugin.guestVolumeMountGroup=true`
+additionally advertises VOLUME_MOUNT_GROUP and requires v1 plus guest support
+that actually applies the requested GID. Both settings are opt-in. Unsupported
+mount-group requests fail instead of being silently accepted.
 
 Drain and unpublish volumes before switching formats in either direction.
 Startup cleanup accepts both formats but does not rewrite live metadata. A live
 legacy/v1 mismatch fails publication without overwriting the existing file.
 Host metadata is not attested authorization; confidential workloads still need
 their independent measured guest policy.
+
+To run conformance against the enabled metadata profile, use
+`CSI_TEST_METADATA_VERSION=v1 CSI_TEST_MOUNT_GROUP=true make test`.
+This verifies the CSI producer only; actual guest GID and read-only behavior
+still require a paired CAA/PodVM integration test.

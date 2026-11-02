@@ -4,6 +4,7 @@
 package driver
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"testing"
@@ -91,5 +92,26 @@ func TestLegacyReplaysMinimumProfileRecordWithoutRewriting(t *testing.T) {
 	after, err := os.ReadFile(path)
 	if err != nil || string(after) != string(old) {
 		t.Fatal("compatible upgrade rewrote a live legacy record")
+	}
+}
+
+func TestMountGroupCapabilityRequiresExplicitGuestSupport(t *testing.T) {
+	for _, tc := range []struct{ versioned, group, advertised bool }{
+		{false, false, false}, {false, true, false}, {true, false, false}, {true, true, true},
+	} {
+		node := &nodeServer{versionedMetadata: tc.versioned, guestVolumeMountGroup: tc.group}
+		result, err := node.NodeGetCapabilities(context.Background(), &csi.NodeGetCapabilitiesRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, cap := range result.Capabilities {
+			if cap.GetRpc().GetType() == csi.NodeServiceCapability_RPC_VOLUME_MOUNT_GROUP {
+				found = true
+			}
+		}
+		if found != tc.advertised {
+			t.Fatalf("configuration %+v advertises group=%v", tc, found)
+		}
 	}
 }

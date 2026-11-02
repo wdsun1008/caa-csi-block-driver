@@ -20,6 +20,7 @@ import (
 
 var (
 	metadataVersion = flag.String("direct-volume-metadata-version", "legacy", "Direct-volume format: legacy or v1 (requires compatible CAA)")
+	guestMountGroup = flag.Bool("guest-volume-mount-group", false, "Advertise fsGroup delegation (requires v1 and compatible CAA guest)")
 	driverName      = flag.String("drivername", "caa-csi-block.csi.confidentialcontainers.io", "CSI driver name")
 	endpoint        = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
 	nodeID          = flag.String("nodeid", "", "Node ID")
@@ -46,6 +47,7 @@ func main() {
 	d, err := driver.NewDriver(driver.Config{
 		Endpoint:                    *endpoint,
 		DirectVolumeMetadataVersion: *metadataVersion,
+		GuestVolumeMountGroup:       *guestMountGroup,
 		DriverName:                  *driverName,
 		VendorVersion:               version,
 		NodeID:                      *nodeID,

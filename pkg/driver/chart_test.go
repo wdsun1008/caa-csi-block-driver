@@ -162,7 +162,7 @@ func TestHelmPreservesTopologyAndResizePermissions(t *testing.T) {
 		}
 	}
 	node := renderChartTemplate(t, "templates/daemonset.yaml", values...)
-	for _, required := range []string{"name: node-api-access", "name: kube-root-ca.crt", "--direct-volume-metadata-version=legacy"} {
+	for _, required := range []string{"name: node-api-access", "name: kube-root-ca.crt", "--direct-volume-metadata-version=legacy", "--guest-volume-mount-group=false"} {
 		if !strings.Contains(node, required) {
 			t.Fatalf("missing node configuration %s", required)
 		}
@@ -183,6 +183,7 @@ func TestHelmRejectsUnsupportedConfigurations(t *testing.T) {
 	}
 	for _, bad := range [][]string{
 		append(alibabaChartValues(), "storageClass.allowVolumeExpansion=true"),
+		append(genericChartValues(), "nodePlugin.guestVolumeMountGroup=true"),
 		append(genericChartValues(), "controller.state.storageClassName="),
 		append(genericChartValues(), "nodePlugin.metadataVersion=unknown"),
 	} {

@@ -4,6 +4,7 @@
 package driver
 
 import (
+	"context"
 	b64 "encoding/base64"
 	"encoding/json"
 	"os"
@@ -167,4 +168,20 @@ func TestCleanStaleMountInfoDirs_NonexistentRoot(t *testing.T) {
 	t.Parallel()
 
 	cleanStaleMountInfoDirs("/nonexistent/path/" + t.Name())
+}
+
+func TestNodeGetCapabilitiesAdvertisesVolumeMountGroup(t *testing.T) {
+	t.Parallel()
+
+	response, err := (&nodeServer{versionedMetadata: true, guestVolumeMountGroup: true}).NodeGetCapabilities(context.Background(), &csi.NodeGetCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("NodeGetCapabilities failed: %v", err)
+	}
+
+	for _, capability := range response.GetCapabilities() {
+		if capability.GetRpc().GetType() == csi.NodeServiceCapability_RPC_VOLUME_MOUNT_GROUP {
+			return
+		}
+	}
+	t.Fatal("VOLUME_MOUNT_GROUP capability is not advertised")
 }

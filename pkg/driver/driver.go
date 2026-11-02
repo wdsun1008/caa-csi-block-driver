@@ -18,6 +18,7 @@ var drvLogger = log.New(log.Writer(), "[caa-csi/driver] ", log.LstdFlags|log.Lms
 
 type Config struct {
 	DirectVolumeMetadataVersion string
+	GuestVolumeMountGroup       bool
 	Endpoint                    string
 	DriverName                  string
 	VendorVersion               string
@@ -54,6 +55,9 @@ func NewDriver(cfg Config) (*Driver, error) {
 	}
 	if cfg.DirectVolumeMetadataVersion != "legacy" && cfg.DirectVolumeMetadataVersion != "v1" {
 		return nil, fmt.Errorf("direct-volume metadata version must be legacy or v1")
+	}
+	if cfg.GuestVolumeMountGroup && cfg.DirectVolumeMetadataVersion != "v1" {
+		return nil, fmt.Errorf("guest volume mount group requires v1 metadata and a compatible CAA guest")
 	}
 	driver := &Driver{config: cfg}
 	if cfg.Component == "all" || cfg.Component == "controller" {
@@ -108,6 +112,7 @@ func (d *Driver) registerServices(server *grpc.Server) {
 	if d.config.Component == "all" || d.config.Component == "node" {
 		node := newNodeServer(d.config.NodeID)
 		node.versionedMetadata = d.config.DirectVolumeMetadataVersion == "v1"
+		node.guestVolumeMountGroup = d.config.GuestVolumeMountGroup
 		csi.RegisterNodeServer(server, node)
 	}
 }
