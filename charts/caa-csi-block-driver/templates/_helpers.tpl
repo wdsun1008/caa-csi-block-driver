@@ -1,4 +1,7 @@
 {{- define "caa-csi.validateValues" -}}
+{{- if not (has .Values.nodePlugin.metadataVersion (list "legacy" "v1")) }}
+{{- fail "nodePlugin.metadataVersion must be legacy or v1" }}
+{{- end }}
 {{- if and (eq .Values.provider "libvirt") (not (index .Values.controller.nodeSelector "kubernetes.io/hostname")) }}
 {{- fail "controller.nodeSelector must pin kubernetes.io/hostname for the libvirt host-local pool" }}
 {{- end }}

@@ -38,6 +38,17 @@ func genericChartValues() []string {
 	}
 }
 
+func alibabaChartValues() []string {
+	return []string{
+		"provider=alibabacloud",
+		"alibabacloud.region=cn-test",
+		"alibabacloud.zoneId=cn-test-a",
+		"alibabacloud.clusterId=cluster-test",
+		"alibabacloud.credentialsSecret=aliyun-controller-credentials",
+		"controller.state.storageClassName=host-storage",
+	}
+}
+
 func TestHelmSeparatesControllerAndNodePrivileges(t *testing.T) {
 	values := genericChartValues()
 	controller := renderChartTemplate(t, "templates/controller.yaml", values...)
@@ -73,40 +84,6 @@ func TestHelmSeparatesControllerAndNodePrivileges(t *testing.T) {
 		if strings.Contains(node, forbidden) {
 			t.Fatalf("node render contains controller-only value %q:\n%s", forbidden, node)
 		}
-	}
-}
-
-func TestHelmPreservesOptionalCDHParameters(t *testing.T) {
-	values := genericChartValues()
-	plain := renderChartTemplate(t, "templates/storageclass.yaml", values...)
-	if strings.Contains(plain, "encrypt-type:") || strings.Contains(plain, "kbs-key-id:") {
-		t.Fatalf("default StorageClass unexpectedly enables CDH:\n%s", plain)
-	}
-
-	values = append(values,
-		"cdh.enabled=true",
-		"cdh.encryptionType=luks2",
-		"cdh.key=default/luks-key/workspace",
-	)
-	encrypted := renderChartTemplate(t, "templates/storageclass.yaml", values...)
-	for _, required := range []string{
-		`encrypt-type: "luks2"`,
-		`kbs-key-id: "default/luks-key/workspace"`,
-	} {
-		if !strings.Contains(encrypted, required) {
-			t.Fatalf("encrypted StorageClass does not contain %q:\n%s", required, encrypted)
-		}
-	}
-}
-
-func alibabaChartValues() []string {
-	return []string{
-		"provider=alibabacloud",
-		"alibabacloud.region=cn-test",
-		"alibabacloud.zoneId=cn-test-a",
-		"alibabacloud.clusterId=cluster-test",
-		"alibabacloud.credentialsSecret=aliyun-controller-credentials",
-		"controller.state.storageClassName=host-storage",
 	}
 }
 
@@ -153,16 +130,68 @@ func TestHelmAlibabaRRSAUsesProjectedShortLivedToken(t *testing.T) {
 	}
 }
 
-func TestHelmAlibabaExpansionIsDisabled(t *testing.T) {
-	output := renderChartTemplate(t, "templates/storageclass.yaml", alibabaChartValues()...)
-	if !strings.Contains(output, "allowVolumeExpansion: false") {
-		t.Fatal("Alibaba expansion must be disabled")
+func TestHelmPreservesOptionalCDHParameters(t *testing.T) {
+	values := genericChartValues()
+	plain := renderChartTemplate(t, "templates/storageclass.yaml", values...)
+	if strings.Contains(plain, "encrypt-type:") || strings.Contains(plain, "kbs-key-id:") {
+		t.Fatalf("default StorageClass unexpectedly enables CDH:\n%s", plain)
 	}
-	args := []string{"template", "invalid-expansion", chartPath}
-	for _, value := range append(alibabaChartValues(), "storageClass.allowVolumeExpansion=true") {
-		args = append(args, "--set", value)
+
+	values = append(values,
+		"cdh.enabled=true",
+		"cdh.encryptionType=luks2",
+		"cdh.key=default/luks-key/workspace",
+	)
+	encrypted := renderChartTemplate(t, "templates/storageclass.yaml", values...)
+	for _, required := range []string{
+		`encrypt-type: "luks2"`,
+		`kbs-key-id: "default/luks-key/workspace"`,
+	} {
+		if !strings.Contains(encrypted, required) {
+			t.Fatalf("encrypted StorageClass does not contain %q:\n%s", required, encrypted)
+		}
 	}
-	if output, err := exec.Command("helm", args...).CombinedOutput(); err == nil {
-		t.Fatalf("unsupported expansion accepted: %s", output)
+}
+
+func TestHelmPreservesTopologyAndResizePermissions(t *testing.T) {
+	values := genericChartValues()
+	controller := renderChartTemplate(t, "templates/controller.yaml", values...)
+	for _, required := range []string{"name: csi-resizer", "--feature-gates=Topology=true"} {
+		if !strings.Contains(controller, required) {
+			t.Fatalf("missing controller feature %s", required)
+		}
+	}
+	node := renderChartTemplate(t, "templates/daemonset.yaml", values...)
+	for _, required := range []string{"name: node-api-access", "name: kube-root-ca.crt", "--direct-volume-metadata-version=legacy"} {
+		if !strings.Contains(node, required) {
+			t.Fatalf("missing node configuration %s", required)
+		}
+	}
+	rbac := renderChartTemplate(t, "templates/rbac.yaml", values...)
+	if !strings.Contains(rbac, "persistentvolumeclaims/status") {
+		t.Fatal("resizer cannot update PVC status")
+	}
+	sc := renderChartTemplate(t, "templates/storageclass.yaml", alibabaChartValues()...)
+	if !strings.Contains(sc, "allowVolumeExpansion: false") {
+		t.Fatal("Alibaba expansion must default to disabled")
+	}
+}
+
+func TestHelmRejectsUnsupportedConfigurations(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is not installed")
+	}
+	for _, bad := range [][]string{
+		append(alibabaChartValues(), "storageClass.allowVolumeExpansion=true"),
+		append(genericChartValues(), "controller.state.storageClassName="),
+		append(genericChartValues(), "nodePlugin.metadataVersion=unknown"),
+	} {
+		args := []string{"template", "invalid-test", chartPath}
+		for _, value := range bad {
+			args = append(args, "--set", value)
+		}
+		if output, err := exec.Command("helm", args...).CombinedOutput(); err == nil {
+			t.Fatalf("invalid config %v accepted: %s", bad, output)
+		}
 	}
 }

@@ -13,6 +13,15 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 )
 
+// The startup cleanup also sees records written by older CSI versions.
+type legacyMountInfoJSON struct {
+	VolumeType string            `json:"volume-type"`
+	Device     string            `json:"device"`
+	FsType     string            `json:"fstype"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	Options    []string          `json:"options,omitempty"`
+}
+
 func TestParseKataVolumeStats(t *testing.T) {
 	t.Parallel()
 
@@ -55,7 +64,7 @@ func TestParseKataVolumeStats(t *testing.T) {
 
 // writeMountInfoDir creates a base64-encoded dir under rootDir with a
 // mountInfo.json inside it. Returns the dir path.
-func writeMountInfoDir(t *testing.T, rootDir, targetPath string, info *mountInfoJSON) string {
+func writeMountInfoDir(t *testing.T, rootDir, targetPath string, info *legacyMountInfoJSON) string {
 	t.Helper()
 	dirName := b64.URLEncoding.EncodeToString([]byte(targetPath))
 	dirPath := filepath.Join(rootDir, dirName)
@@ -80,7 +89,7 @@ func TestCleanStaleMountInfoDirs_TargetExists(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := t.TempDir()
 
-	dirPath := writeMountInfoDir(t, rootDir, targetPath, &mountInfoJSON{
+	dirPath := writeMountInfoDir(t, rootDir, targetPath, &legacyMountInfoJSON{
 		VolumeType: "directvol",
 		Device:     "/dev/sda",
 		FsType:     "ext4",
@@ -99,7 +108,7 @@ func TestCleanStaleMountInfoDirs_TargetGone(t *testing.T) {
 	rootDir := t.TempDir()
 	targetPath := filepath.Join(t.TempDir(), "gone")
 
-	dirPath := writeMountInfoDir(t, rootDir, targetPath, &mountInfoJSON{
+	dirPath := writeMountInfoDir(t, rootDir, targetPath, &legacyMountInfoJSON{
 		VolumeType: "directvol",
 		Device:     "/dev/sda",
 		FsType:     "ext4",

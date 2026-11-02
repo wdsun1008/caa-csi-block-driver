@@ -65,6 +65,7 @@ spec:
             - "--drivername=caa-csi-block.csi.confidentialcontainers.io"
             - "--endpoint=unix:///csi/csi.sock"
             - "--component=node"
+            - "--direct-volume-metadata-version=legacy"
             - "--nodeid=$(KUBE_NODE_NAME)"
           env:
             - name: KUBE_NODE_NAME

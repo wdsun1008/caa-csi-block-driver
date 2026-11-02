@@ -57,6 +57,7 @@ spec:
             - "--drivername={{ .Values.csiDriver.name }}"
             - "--endpoint=unix:///csi/csi.sock"
             - "--component=node"
+            - "--direct-volume-metadata-version={{ .Values.nodePlugin.metadataVersion }}"
             - "--nodeid=$(KUBE_NODE_NAME)"
           env:
             - name: KUBE_NODE_NAME

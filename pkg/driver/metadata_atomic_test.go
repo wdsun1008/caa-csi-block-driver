@@ -38,7 +38,9 @@ func TestAtomicMetadataFailedRenamePreservesTarget(t *testing.T) {
 
 func TestAtomicMetadataPublishReplaysAfterNodeRestart(t *testing.T) {
 	t.Setenv("KATA_DIRECT_VOLUME_ROOT_PATH", t.TempDir())
-	target := filepath.Join(t.TempDir(), "target")
+	kubelet := t.TempDir()
+	t.Setenv("KUBELET_ROOT_PATH", kubelet)
+	target := filepath.Join(kubelet, "pods", "pod-uid", "volumes", "kubernetes.io~csi", "volume-1", "mount")
 	request := &csi.NodePublishVolumeRequest{
 		VolumeId: "volume-1", TargetPath: target,
 		VolumeContext:    map[string]string{"cloud-volume-path": "disk-1"},
@@ -63,7 +65,7 @@ func TestUnpublishReturnsCleanupFailure(t *testing.T) {
 	removeAllPath = func(string) error { return errors.New("injected failure") }
 	defer func() { removeAllPath = original }()
 	_, err := newNodeServer("node").NodeUnpublishVolume(t.Context(), &csi.NodeUnpublishVolumeRequest{
-		VolumeId: "volume-1", TargetPath: filepath.Join(t.TempDir(), "target"),
+		VolumeId: "volume-1", TargetPath: filepath.Join(getKubeletRootPath(), "pods", "pod-uid", "volumes", "kubernetes.io~csi", "volume-1", "mount"),
 	})
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("got %v", err)

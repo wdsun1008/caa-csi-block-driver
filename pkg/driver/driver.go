@@ -17,12 +17,13 @@ import (
 var drvLogger = log.New(log.Writer(), "[caa-csi/driver] ", log.LstdFlags|log.Lmsgprefix)
 
 type Config struct {
-	Endpoint       string
-	DriverName     string
-	VendorVersion  string
-	NodeID         string
-	Component      string
-	VolumeStoreDir string
+	DirectVolumeMetadataVersion string
+	Endpoint                    string
+	DriverName                  string
+	VendorVersion               string
+	NodeID                      string
+	Component                   string
+	VolumeStoreDir              string
 }
 
 type Driver struct {
@@ -48,6 +49,12 @@ func NewDriver(cfg Config) (*Driver, error) {
 		return nil, fmt.Errorf("node ID is required")
 	}
 
+	if cfg.DirectVolumeMetadataVersion == "" {
+		cfg.DirectVolumeMetadataVersion = "legacy"
+	}
+	if cfg.DirectVolumeMetadataVersion != "legacy" && cfg.DirectVolumeMetadataVersion != "v1" {
+		return nil, fmt.Errorf("direct-volume metadata version must be legacy or v1")
+	}
 	driver := &Driver{config: cfg}
 	if cfg.Component == "all" || cfg.Component == "controller" {
 		var err error
@@ -99,7 +106,9 @@ func (d *Driver) registerServices(server *grpc.Server) {
 		csi.RegisterControllerServer(server, newControllerServer(d.store))
 	}
 	if d.config.Component == "all" || d.config.Component == "node" {
-		csi.RegisterNodeServer(server, newNodeServer(d.config.NodeID))
+		node := newNodeServer(d.config.NodeID)
+		node.versionedMetadata = d.config.DirectVolumeMetadataVersion == "v1"
+		csi.RegisterNodeServer(server, node)
 	}
 }
 

@@ -116,4 +116,6 @@ resources:
       memory: 64Mi
 
 nodePlugin:
+  # v1 requires a matching CAA proxy and guest; drain volumes before switching.
+  metadataVersion: legacy
   privileged: true

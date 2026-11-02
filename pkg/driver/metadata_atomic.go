@@ -4,43 +4,10 @@
 package driver
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
-
-func publishLegacyMountInfo(path string, info mountInfoJSON) error {
-	data, err := json.Marshal(info)
-	if err != nil {
-		return status.Errorf(codes.Internal, "marshal mountInfo: %v", err)
-	}
-	existing, err := os.ReadFile(path)
-	if err == nil {
-		var previous, desired map[string]interface{}
-		if err := json.Unmarshal(existing, &previous); err != nil {
-			return status.Errorf(codes.Internal, "invalid existing mountInfo: %v", err)
-		}
-		_ = json.Unmarshal(data, &desired)
-		before, _ := json.Marshal(previous)
-		after, _ := json.Marshal(desired)
-		if !bytes.Equal(before, after) {
-			return status.Error(codes.AlreadyExists, "target is already published with incompatible properties")
-		}
-		return nil
-	}
-	if !os.IsNotExist(err) {
-		return status.Errorf(codes.Internal, "read mountInfo: %v", err)
-	}
-	if err := writeMountInfoAtomic(path, append(data, '\n')); err != nil {
-		return status.Errorf(codes.Internal, "publish mountInfo: %v", err)
-	}
-	return nil
-}
 
 func writeMountInfoAtomic(path string, data []byte) error {
 	dir := filepath.Dir(path)

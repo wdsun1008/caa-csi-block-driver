@@ -53,5 +53,27 @@ provider examples.
 Helm uninstall retains the journal PVC (`helm.sh/resource-policy: keep`). Delete
 workloads and data PVCs first, verify cloud disks have been released, uninstall,
 and only then explicitly delete the state PVC if no recovery is needed. Back up
-this PVC before upgrades. Cloud discovery is not a replacement for a journal backup.
+this PVC before upgrades. Pending operations require their original journal;
+cloud discovery is not a replacement for the journal or its operation tokens.
 
+## Metadata compatibility
+
+The default `nodePlugin.metadataVersion=legacy` preserves the released
+`volume-type`, `device`, `fstype`, `metadata` and `options` wire format. Publication
+is atomic and incompatible same-target replays fail. Legacy CAA implementations
+may ignore metadata mount options; retained OCI container `ro` options can still
+restrict a container bind mount. That does not promise a read-only underlying
+guest filesystem or block device.
+
+`nodePlugin.metadataVersion=v1` adds explicit read-only intent, volume handle,
+Pod UID, mount options and versioned validation. Enable it only with a CAA proxy
+and guest that consume this contract. VOLUME_MOUNT_GROUP is not advertised by this change. Delegated mount-group
+requests remain disabled until a separately enabled guest implementation can
+apply the GID. Unsupported mount-group requests fail instead of being silently
+accepted.
+
+Drain and unpublish volumes before switching formats in either direction.
+Startup cleanup accepts both formats but does not rewrite live metadata. A live
+legacy/v1 mismatch fails publication without overwriting the existing file.
+Host metadata is not attested authorization; confidential workloads still need
+their independent measured guest policy.

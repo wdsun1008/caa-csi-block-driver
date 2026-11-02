@@ -19,12 +19,13 @@ import (
 )
 
 var (
-	driverName     = flag.String("drivername", "caa-csi-block.csi.confidentialcontainers.io", "CSI driver name")
-	endpoint       = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
-	nodeID         = flag.String("nodeid", "", "Node ID")
-	component      = flag.String("component", "all", "CSI component to serve: controller, node, or all")
-	volumeStoreDir = flag.String("volume-store-dir", "", "Durable controller volume store directory")
-	version        = "0.2.0"
+	metadataVersion = flag.String("direct-volume-metadata-version", "legacy", "Direct-volume format: legacy or v1 (requires compatible CAA)")
+	driverName      = flag.String("drivername", "caa-csi-block.csi.confidentialcontainers.io", "CSI driver name")
+	endpoint        = flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
+	nodeID          = flag.String("nodeid", "", "Node ID")
+	component       = flag.String("component", "all", "CSI component to serve: controller, node, or all")
+	volumeStoreDir  = flag.String("volume-store-dir", "", "Durable controller volume store directory")
+	version         = "0.2.0"
 )
 
 func main() {
@@ -43,12 +44,13 @@ func main() {
 	}
 
 	d, err := driver.NewDriver(driver.Config{
-		Endpoint:       *endpoint,
-		DriverName:     *driverName,
-		VendorVersion:  version,
-		NodeID:         *nodeID,
-		Component:      *component,
-		VolumeStoreDir: *volumeStoreDir,
+		Endpoint:                    *endpoint,
+		DirectVolumeMetadataVersion: *metadataVersion,
+		DriverName:                  *driverName,
+		VendorVersion:               version,
+		NodeID:                      *nodeID,
+		Component:                   *component,
+		VolumeStoreDir:              *volumeStoreDir,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create driver: %v", err)
