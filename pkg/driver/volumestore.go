@@ -45,13 +45,19 @@ type volumeStore struct {
 	dir string
 }
 
-func newVolumeStore() *volumeStore {
+func newVolumeStore() (*volumeStore, error) {
 	dir := os.Getenv("CSI_VOLUME_STORE_DIR")
 	if dir == "" {
 		dir = defaultVolumeStoreDir
 	}
-	os.MkdirAll(dir, 0700)
-	return &volumeStore{dir: dir}
+	return newVolumeStoreAt(dir)
+}
+
+func newVolumeStoreAt(dir string) (*volumeStore, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create volume store: %w", err)
+	}
+	return &volumeStore{dir: filepath.Clean(dir)}, nil
 }
 
 func (vs *volumeStore) manifestPath() string {

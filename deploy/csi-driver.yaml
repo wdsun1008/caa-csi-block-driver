@@ -1,7 +1,15 @@
+---
+# Source: caa-csi-block-driver/templates/csi-driver.yaml
 apiVersion: storage.k8s.io/v1
 kind: CSIDriver
 metadata:
   name: caa-csi-block.csi.confidentialcontainers.io
+  labels:
+    app.kubernetes.io/name: caa-csi-block-driver
+    app.kubernetes.io/instance: caa-csi-block
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: caa-csi-block-driver-0.2.0
 spec:
   attachRequired: false
   podInfoOnMount: false

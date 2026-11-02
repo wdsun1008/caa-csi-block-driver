@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -21,8 +20,6 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-
-	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
 
 var removeAllPath = os.RemoveAll
@@ -143,31 +140,19 @@ func (ns *nodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		return nil, status.Error(codes.InvalidArgument, "Volume capability missing")
 	}
 
-	params := req.GetVolumeContext()
-
-	p, err := provider.NewBlockVolumeProvider(params)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create provider: %v", err)
+	devicePath := strings.TrimSpace(req.GetVolumeContext()["cloud-volume-path"])
+	if devicePath == "" {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"volume %s has no controller-provided cloud-volume-path", volumeID)
 	}
-
-	var sizeBytes int64 = 1073741824
-	if capacityStr := params["capacity_in_bytes"]; capacityStr != "" {
-		if parsed, err := strconv.ParseInt(capacityStr, 10, 64); err == nil && parsed > 0 {
-			sizeBytes = parsed
-		} else {
-			nsLogger.Printf("WARNING: invalid capacity_in_bytes %q, using default 1GiB", capacityStr)
-		}
-	}
-
-	volInfo, err := p.CreateVolume(ctx, volumeID, sizeBytes)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "provider.CreateVolume failed: %v", err)
-	}
-
 	ns.mu.Lock()
-	ns.devices[volumeID] = volInfo.Path
-	ns.mu.Unlock()
-	nsLogger.Printf("NodeStageVolume: %s staged (provider=%s, path=%s)", volumeID, volInfo.Provider, volInfo.Path)
+	defer ns.mu.Unlock()
+	if existing := ns.devices[volumeID]; existing != "" && existing != devicePath {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"volume %s was already staged with cloud-volume-path %q, not %q", volumeID, existing, devicePath)
+	}
+	ns.devices[volumeID] = devicePath
+	nsLogger.Printf("NodeStageVolume: %s staged (path=%s)", volumeID, devicePath)
 
 	return &csi.NodeStageVolumeResponse{}, nil
 }

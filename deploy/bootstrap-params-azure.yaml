@@ -1,18 +1,22 @@
+---
+# Source: caa-csi-block-driver/templates/bootstrap-params.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: caa-csi-bootstrap-params
+  name: caa-csi-block-plugin-bootstrap-params
   namespace: caa-csi-block
   labels:
-    app: caa-csi-block
+    app.kubernetes.io/name: caa-csi-block-driver
+    app.kubernetes.io/instance: caa-csi-block
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: caa-csi-block-driver-0.2.0
 data:
-  # Same keys as the Azure StorageClass — used for empty-store recovery / delete fallback.
-  # Replace the placeholders before applying.
   bootstrap-params.json: |
     {
       "cloudProvider": "azure",
-      "azureSubscriptionId": "<AZURE_SUBSCRIPTION_ID>",
-      "azureResourceGroup": "<AZURE_RESOURCE_GROUP>",
-      "azureLocation": "eastus",
+      "azureSubscriptionId": "AZURE_SUBSCRIPTION_ID",
+      "azureResourceGroup": "AZURE_RESOURCE_GROUP",
+      "azureLocation": "AZURE_LOCATION",
       "azureDiskSKU": "StandardSSD_LRS"
     }

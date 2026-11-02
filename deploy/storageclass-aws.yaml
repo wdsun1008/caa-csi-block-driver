@@ -1,13 +1,21 @@
+---
+# Source: caa-csi-block-driver/templates/storageclass.yaml
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
-  name: caa-block-aws
-parameters:
-  cloudProvider: aws
-  awsRegion: us-east-2
-  # Recommended for Peer Pods: pin to the same AZ as CAA's AWS_SUBNET_ID.
-  awsAvailabilityZone: us-east-2c
-  awsVolumeType: gp3
+  name: caa-csi-block-plugin-aws
+  labels:
+    app.kubernetes.io/name: caa-csi-block-driver
+    app.kubernetes.io/instance: caa-csi-block
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: caa-csi-block-driver-0.2.0
 provisioner: caa-csi-block.csi.confidentialcontainers.io
 reclaimPolicy: Delete
 volumeBindingMode: Immediate
+allowVolumeExpansion: true
+parameters:
+  cloudProvider: aws
+  awsRegion: "AWS_REGION"
+  awsAvailabilityZone: "AWS_ZONE"
+  awsVolumeType: "gp3"

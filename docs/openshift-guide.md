@@ -1,5 +1,9 @@
 # Using Cloud CSI Adaptor with OpenShift Sandboxed Containers on ARO
 
+Before following this guide, configure the [independent controller state PVC and
+migration requirements](controller-deployment.md). Cloud credentials belong to
+the controller ServiceAccount/Deployment; the node DaemonSet only publishes volumes.
+
 This guide walks through setting up the Cloud CSI Adaptor with OpenShift Sandboxed Containers (OSC) on an Azure Red Hat OpenShift (ARO) cluster to provision Azure Managed Disks for Peer Pod workloads.
 
 OSC is Red Hat's productized distribution of Kata Containers for OpenShift. It provides peer pod support through an Operator that manages the Cloud API Adaptor (CAA), kata runtime installation, PodVM image creation, and lifecycle management.
@@ -268,6 +272,7 @@ oc get pods -n openshift-sandboxed-containers-operator -l name=osc-caa-ds
 
 ```bash
 helm install caa-csi-block-driver ./charts/caa-csi-block-driver \
+  --set controller.state.storageClassName=YOUR_HOST_STORAGE_CLASS \
   --set provider=azure \
   --set image.tag=main \
   --set azure.subscriptionId=$SUBSCRIPTION_ID \

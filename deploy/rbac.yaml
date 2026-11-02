@@ -1,13 +1,15 @@
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: caa-csi-provisioner
-  namespace: caa-csi-block
 ---
+# Source: caa-csi-block-driver/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: caa-csi-provisioner-role
+  name: caa-csi-block-plugin
+  labels:
+    app.kubernetes.io/name: caa-csi-block-driver
+    app.kubernetes.io/instance: caa-csi-block
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: caa-csi-block-driver-0.2.0
 rules:
   - apiGroups: [""]
     resources: ["persistentvolumes"]
@@ -15,6 +17,9 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "update"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims/status"]
+    verbs: ["patch", "update"]
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses"]
     verbs: ["get", "list", "watch"]
@@ -34,15 +39,46 @@ rules:
     resources: ["volumeattachments"]
     verbs: ["get", "list", "watch"]
 ---
+# Source: caa-csi-block-driver/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: caa-csi-block-plugin-node
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+---
+# Source: caa-csi-block-driver/templates/rbac.yaml
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: caa-csi-provisioner-binding
+  name: caa-csi-block-plugin
+  labels:
+    app.kubernetes.io/name: caa-csi-block-driver
+    app.kubernetes.io/instance: caa-csi-block
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: caa-csi-block-driver-0.2.0
 subjects:
   - kind: ServiceAccount
     name: caa-csi-provisioner
     namespace: caa-csi-block
 roleRef:
   kind: ClusterRole
-  name: caa-csi-provisioner-role
+  name: caa-csi-block-plugin
+  apiGroup: rbac.authorization.k8s.io
+---
+# Source: caa-csi-block-driver/templates/rbac.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: caa-csi-block-plugin-node
+subjects:
+  - kind: ServiceAccount
+    name: caa-csi-block-plugin-node
+    namespace: caa-csi-block
+roleRef:
+  kind: ClusterRole
+  name: caa-csi-block-plugin-node
   apiGroup: rbac.authorization.k8s.io

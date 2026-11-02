@@ -1,50 +1,35 @@
+---
+# Source: caa-csi-block-driver/templates/daemonset.yaml
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: caa-csi-block-plugin
   namespace: caa-csi-block
   labels:
-    app: caa-csi-block
+    app.kubernetes.io/name: caa-csi-block-driver
+    app.kubernetes.io/instance: caa-csi-block
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: caa-csi-block-driver-0.2.0
+    app.kubernetes.io/component: node
 spec:
   selector:
     matchLabels:
-      app: caa-csi-block
+      app.kubernetes.io/name: caa-csi-block-driver
+      app.kubernetes.io/instance: caa-csi-block
+      app.kubernetes.io/component: node
   template:
     metadata:
       labels:
-        app: caa-csi-block
+        app.kubernetes.io/name: caa-csi-block-driver
+        app.kubernetes.io/instance: caa-csi-block
+        app.kubernetes.io/component: node
     spec:
-      serviceAccountName: caa-csi-provisioner
+      serviceAccountName: caa-csi-block-plugin-node
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: NODE_NAME
       containers:
-        # Sidecar: csi-provisioner (handles CreateVolume/DeleteVolume RPCs from Kubernetes)
-        - name: csi-provisioner
-          image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.0
-          args:
-            - "-v=3"
-            - "--csi-address=/csi/csi.sock"
-            - "--worker-threads=5"
-            # v3.6 has Topology off by default; required for WaitForFirstConsumer.
-            - "--feature-gates=Topology=true"
-          env:
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-            - name: NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-          securityContext:
-            privileged: true
-          volumeMounts:
-            - mountPath: /csi
-              name: socket-dir
-
-        # Sidecar: node-driver-registrar (registers CSI driver with kubelet)
         - name: node-driver-registrar
           image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.9.0
           args:
@@ -56,31 +41,52 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+          resources:
+            limits:
+              cpu: 50m
+              memory: 64Mi
+            requests:
+              cpu: 10m
+              memory: 16Mi
           securityContext:
-            privileged: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
             - mountPath: /registration
               name: registration-dir
 
-        # Main: caa-csi-block-driver
         - name: caa-csi-block-driver
-          image: ghcr.io/confidential-devhub/caa-csi-block-driver:main
+          image: "ghcr.io/confidential-devhub/caa-csi-block-driver:0.2.0"
+          imagePullPolicy: IfNotPresent
           args:
             - "--drivername=caa-csi-block.csi.confidentialcontainers.io"
             - "--endpoint=unix:///csi/csi.sock"
+            - "--component=node"
             - "--nodeid=$(KUBE_NODE_NAME)"
           env:
             - name: KUBE_NODE_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
           securityContext:
             privileged: true
           volumeMounts:
             - mountPath: /csi
               name: socket-dir
+            # Only the driver reads node labels; the registrar gets no API token.
+            - mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              name: node-api-access
+              readOnly: true
             - mountPath: /var/lib/kubelet/pods
               name: mountpoint-dir
               mountPropagation: Bidirectional
@@ -91,10 +97,19 @@ spec:
               name: shared-directvols
             - mountPath: /var/lib/caa-csi-volumes
               name: libvirt-pool
-            - mountPath: /var/lib/caa-csi-block
-              name: csi-data
 
       volumes:
+        - name: node-api-access
+          projected:
+            sources:
+              - serviceAccountToken:
+                  expirationSeconds: 3600
+                  path: token
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
         - name: socket-dir
           hostPath:
             path: /var/lib/kubelet/plugins/caa-csi-block
@@ -118,8 +133,4 @@ spec:
         - name: libvirt-pool
           hostPath:
             path: /var/lib/caa-csi-volumes
-            type: DirectoryOrCreate
-        - name: csi-data
-          hostPath:
-            path: /var/lib/caa-csi-block
             type: DirectoryOrCreate

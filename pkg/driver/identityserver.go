@@ -15,6 +15,7 @@ type identityServer struct {
 	csi.UnimplementedIdentityServer
 	driverName    string
 	vendorVersion string
+	controller    bool
 }
 
 func (ids *identityServer) GetPluginInfo(_ context.Context, _ *csi.GetPluginInfoRequest) (*csi.GetPluginInfoResponse, error) {
@@ -31,8 +32,9 @@ func (ids *identityServer) GetPluginInfo(_ context.Context, _ *csi.GetPluginInfo
 }
 
 func (ids *identityServer) GetPluginCapabilities(_ context.Context, _ *csi.GetPluginCapabilitiesRequest) (*csi.GetPluginCapabilitiesResponse, error) {
-	return &csi.GetPluginCapabilitiesResponse{
-		Capabilities: []*csi.PluginCapability{
+	response := &csi.GetPluginCapabilitiesResponse{}
+	if ids.controller {
+		response.Capabilities = []*csi.PluginCapability{
 			{
 				Type: &csi.PluginCapability_Service_{
 					Service: &csi.PluginCapability_Service{
@@ -54,8 +56,9 @@ func (ids *identityServer) GetPluginCapabilities(_ context.Context, _ *csi.GetPl
 					},
 				},
 			},
-		},
-	}, nil
+		}
+	}
+	return response, nil
 }
 
 func (ids *identityServer) Probe(_ context.Context, _ *csi.ProbeRequest) (*csi.ProbeResponse, error) {

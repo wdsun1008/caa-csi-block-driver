@@ -28,8 +28,7 @@ type controllerServer struct {
 	store *volumeStore
 }
 
-func newControllerServer() *controllerServer {
-	store := newVolumeStore()
+func newControllerServer(store *volumeStore) *controllerServer {
 
 	if params := store.BootstrapParams(); params != nil {
 		if err := store.RecoverFromCloud(params); err != nil {
@@ -116,7 +115,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 				"volume %s already exists with different capacity (%d != %d)", req.GetName(), rec.CapacityBytes, capacity)
 		}
 		csLogger.Printf("CreateVolume: %s already exists, returning existing", req.GetName())
-		volumeCtx := map[string]string{"cloudProvider": rec.Provider}
+		volumeCtx := map[string]string{"cloudProvider": rec.Provider, "cloud-volume-path": rec.Path}
 		for k, v := range rec.Params {
 			volumeCtx[k] = v
 		}
@@ -194,7 +193,8 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	csLogger.Printf("CreateVolume: %s (provider=%s, path=%s)", req.GetName(), volInfo.Provider, volInfo.Path)
 
 	volumeCtx := map[string]string{
-		"cloudProvider": volInfo.Provider,
+		"cloudProvider":     volInfo.Provider,
+		"cloud-volume-path": volInfo.Path,
 	}
 	for k, v := range params {
 		volumeCtx[k] = v

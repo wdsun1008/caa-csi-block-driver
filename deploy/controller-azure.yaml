@@ -1,0 +1,131 @@
+---
+# Source: caa-csi-block-driver/templates/controller.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: caa-csi-block-plugin-controller-state
+  namespace: caa-csi-block
+  labels:
+    app.kubernetes.io/name: caa-csi-block-driver
+    app.kubernetes.io/instance: caa-csi-block
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: caa-csi-block-driver-0.2.0
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: "HOST_STORAGE_CLASS"
+---
+# Source: caa-csi-block-driver/templates/controller.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: caa-csi-block-plugin-controller
+  namespace: caa-csi-block
+  labels:
+    app.kubernetes.io/name: caa-csi-block-driver
+    app.kubernetes.io/instance: caa-csi-block
+    app.kubernetes.io/version: "0.2.0"
+    app.kubernetes.io/managed-by: Helm
+    helm.sh/chart: caa-csi-block-driver-0.2.0
+    app.kubernetes.io/component: controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: caa-csi-block-driver
+      app.kubernetes.io/instance: caa-csi-block
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: caa-csi-block-driver
+        app.kubernetes.io/instance: caa-csi-block
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: caa-csi-provisioner
+      containers:
+        - name: csi-provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v3.6.0
+          args:
+            - "-v=3"
+            - "--csi-address=/csi/csi.sock"
+            - "--worker-threads=5"
+            - "--leader-election=true"
+            - "--feature-gates=Topology=true"
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 20m
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+
+        - name: csi-resizer
+          image: registry.k8s.io/sig-storage/csi-resizer:v1.11.2
+          args:
+            - "--csi-address=/csi/csi.sock"
+            - "--leader-election=true"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+
+        - name: caa-csi-block-controller
+          image: "ghcr.io/confidential-devhub/caa-csi-block-driver:0.2.0"
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--drivername=caa-csi-block.csi.confidentialcontainers.io"
+            - "--endpoint=unix:///csi/csi.sock"
+            - "--component=controller"
+            - "--volume-store-dir=/var/lib/caa-csi-block/volumes"
+          env:
+            - name: CSI_CLOUD_PROVIDER
+              value: "azure"
+            - name: CSI_BOOTSTRAP_PARAMS_FILE
+              value: /etc/caa-csi-block/bootstrap-params.json
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - mountPath: /csi
+              name: socket-dir
+            - mountPath: /var/lib/caa-csi-block
+              name: controller-state
+            - mountPath: /etc/caa-csi-block
+              name: bootstrap-params
+              readOnly: true
+      volumes:
+        - name: socket-dir
+          emptyDir: {}
+        - name: controller-state
+          persistentVolumeClaim:
+            claimName: caa-csi-block-plugin-controller-state
+        - name: bootstrap-params
+          configMap:
+            name: caa-csi-block-plugin-bootstrap-params

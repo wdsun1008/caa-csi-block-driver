@@ -10,6 +10,15 @@ import (
 	"testing"
 )
 
+func mustVolumeStore(t *testing.T) *volumeStore {
+	t.Helper()
+	store, err := newVolumeStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
 func TestBootstrapParamsPriority(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CSI_VOLUME_STORE_DIR", dir)
@@ -17,7 +26,7 @@ func TestBootstrapParamsPriority(t *testing.T) {
 	t.Setenv("CLOUD_PROVIDER", "")
 	t.Setenv("CSI_BOOTSTRAP_PARAMS_FILE", "")
 
-	vs := newVolumeStore()
+	vs := mustVolumeStore(t)
 
 	// 4) env is used when nothing else is available
 	t.Setenv("CSI_CLOUD_PROVIDER", "aws")
@@ -79,15 +88,15 @@ func TestWriteManifestSurvivesLastDelete(t *testing.T) {
 	t.Setenv("CSI_CLOUD_PROVIDER", "")
 	t.Setenv("CSI_BOOTSTRAP_PARAMS_FILE", "")
 
-	vs := newVolumeStore()
+	vs := mustVolumeStore(t)
 	if err := vs.Save(&volumeRecord{
 		VolumeID: "vol-1",
 		Provider: "aws",
 		Path:     "vol-abc",
 		Params: map[string]string{
-			"cloudProvider":        "aws",
-			"awsRegion":            "us-east-2",
-			"awsAvailabilityZone":  "us-east-2a",
+			"cloudProvider":       "aws",
+			"awsRegion":           "us-east-2",
+			"awsAvailabilityZone": "us-east-2a",
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -114,7 +123,7 @@ func TestRecoverFromCloudSkipsExisting(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CSI_VOLUME_STORE_DIR", dir)
 
-	vs := newVolumeStore()
+	vs := mustVolumeStore(t)
 	if err := vs.Save(&volumeRecord{
 		VolumeID:      "keep-me",
 		Provider:      "aws",
@@ -178,7 +187,7 @@ func TestWriteManifestSkipsRecordWithoutCloudProvider(t *testing.T) {
 	t.Setenv("CSI_CLOUD_PROVIDER", "")
 	t.Setenv("CSI_BOOTSTRAP_PARAMS_FILE", "")
 
-	vs := newVolumeStore()
+	vs := mustVolumeStore(t)
 	// First on disk may be params-less; valid params should still win for the manifest.
 	if err := vs.Save(&volumeRecord{
 		VolumeID: "vol-bad",

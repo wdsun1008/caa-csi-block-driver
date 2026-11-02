@@ -1,5 +1,9 @@
 # Using Cloud CSI Adaptor with CAA on Azure AKS
 
+Before following this guide, configure the [independent controller state PVC and
+migration requirements](controller-deployment.md). Cloud credentials belong to
+the controller ServiceAccount/Deployment; the node DaemonSet only publishes volumes.
+
 This guide walks through setting up the Cloud CSI Adaptor with Cloud API Adaptor (CAA) on an Azure Kubernetes Service (AKS) cluster to provision Azure Managed Disks for Peer Pod workloads.
 
 ## Prerequisites
@@ -133,6 +137,7 @@ kubectl annotate serviceaccount caa-csi-provisioner \
 
 ```bash
 helm install caa-csi-block-driver ./charts/caa-csi-block-driver \
+  --set controller.state.storageClassName=YOUR_HOST_STORAGE_CLASS \
   --set provider=azure \
   --set azure.subscriptionId=$SUBSCRIPTION_ID \
   --set azure.resourceGroup=$RESOURCE_GROUP \

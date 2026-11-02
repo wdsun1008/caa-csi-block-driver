@@ -1,5 +1,9 @@
 # AWS IRSA Setup Guide for CAA CSI Block Driver
 
+Before following this guide, configure the [independent controller state PVC and
+migration requirements](controller-deployment.md). Cloud credentials belong to
+the controller ServiceAccount/Deployment; the node DaemonSet only publishes volumes.
+
 This guide explains how to use IAM Roles for Service Accounts (IRSA) with
 the CAA CSI Block Driver on Amazon EKS. IRSA eliminates the need for static
 AWS credentials stored in Kubernetes secrets.
@@ -162,6 +166,7 @@ echo "Role ARN: ${CSI_ROLE_ARN}"
 
 ```bash
 helm install caa-csi charts/caa-csi-block-driver \
+  --set controller.state.storageClassName=YOUR_HOST_STORAGE_CLASS \
   --set provider=aws \
   --set aws.region=us-east-2 \
   --set aws.availabilityZone=us-east-2c \
@@ -231,6 +236,7 @@ If you already have the driver deployed with static credentials:
 ```bash
 # Upgrade with IRSA
 helm upgrade caa-csi charts/caa-csi-block-driver \
+  --set controller.state.storageClassName=YOUR_HOST_STORAGE_CLASS \
   --set provider=aws \
   --set aws.region=us-east-2 \
   --set aws.availabilityZone=us-east-2c \

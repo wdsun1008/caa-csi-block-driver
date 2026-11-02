@@ -14,6 +14,12 @@ for volume attachment to PodVMs.
 | **Azure** | Managed Disks | DefaultAzureCredential (Workload Identity, Managed Identity, env vars) | Supported |
 | **Libvirt** | Raw disk files | N/A (local) | Supported (dev/test) |
 
+The deployment uses a single controller with durable state and a separate node
+DaemonSet. Read [deployment, migration and metadata compatibility](docs/controller-deployment.md)
+before upgrading. Set `controller.state.storageClassName` to an independent
+host-cluster StorageClass. Raw examples contain uppercase placeholders that must
+be replaced before use.
+
 ## Architecture
 
 ```
@@ -112,8 +118,10 @@ kubectl create secret generic caa-csi-aws-creds \
 # Edit bootstrap-params-aws.yaml with your region and availability zone first
 kubectl apply -f deploy/bootstrap-params-aws.yaml
 
+kubectl apply -f deploy/serviceaccount.yaml
 kubectl apply -f deploy/rbac.yaml
 kubectl apply -f deploy/csi-driver.yaml
+kubectl apply -f deploy/controller-aws.yaml
 kubectl apply -f deploy/daemonset-aws.yaml
 kubectl apply -f deploy/storageclass-aws.yaml
 ```
@@ -131,6 +139,7 @@ Managed Identity, and environment variables. No secrets in StorageClass paramete
 
 ```bash
 kubectl apply -f deploy/namespace.yaml
+kubectl apply -f deploy/serviceaccount.yaml
 kubectl apply -f deploy/rbac.yaml
 kubectl apply -f deploy/csi-driver.yaml
 
@@ -138,6 +147,7 @@ kubectl apply -f deploy/csi-driver.yaml
 # Edit bootstrap-params-azure.yaml with your subscription, resource group, and location first
 kubectl apply -f deploy/bootstrap-params-azure.yaml
 
+kubectl apply -f deploy/controller-azure.yaml
 kubectl apply -f deploy/daemonset-azure.yaml
 
 # Edit storageclass-azure.yaml with your subscription, resource group, and location
@@ -148,8 +158,11 @@ kubectl apply -f deploy/storageclass-azure.yaml
 
 ```bash
 kubectl apply -f deploy/namespace.yaml
+kubectl apply -f deploy/serviceaccount.yaml
 kubectl apply -f deploy/rbac.yaml
 kubectl apply -f deploy/csi-driver.yaml
+kubectl apply -f deploy/bootstrap-params-libvirt.yaml
+kubectl apply -f deploy/controller-libvirt.yaml
 kubectl apply -f deploy/daemonset.yaml
 kubectl apply -f deploy/storageclass-libvirt.yaml
 ```
