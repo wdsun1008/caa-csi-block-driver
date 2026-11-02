@@ -4,6 +4,7 @@
 package driver
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -65,9 +66,7 @@ func TestBootstrapParamsPriority(t *testing.T) {
 
 	// 1) surviving volume record overrides manifest
 	rec := &volumeRecord{
-		VolumeID: "vol-1",
-		Provider: "aws",
-		Path:     "vol-abc",
+		VolumeID: "vol-1", Provider: "aws", Path: "vol-abc", CapacityBytes: 1,
 		Params: map[string]string{
 			"cloudProvider": "aws",
 			"awsRegion":     "ap-south-1",
@@ -90,9 +89,7 @@ func TestWriteManifestSurvivesLastDelete(t *testing.T) {
 
 	vs := mustVolumeStore(t)
 	if err := vs.Save(&volumeRecord{
-		VolumeID: "vol-1",
-		Provider: "aws",
-		Path:     "vol-abc",
+		VolumeID: "vol-1", Provider: "aws", Path: "vol-abc", CapacityBytes: 1,
 		Params: map[string]string{
 			"cloudProvider":       "aws",
 			"awsRegion":           "us-east-2",
@@ -138,10 +135,10 @@ func TestRecoverFromCloudSkipsExisting(t *testing.T) {
 	}
 
 	// RecoverFromCloud with nil/empty provider is a no-op
-	if err := vs.RecoverFromCloud(nil); err != nil {
+	if err := vs.RecoverFromCloud(context.Background(), nil); err != nil {
 		t.Fatalf("nil params should be no-op: %v", err)
 	}
-	if err := vs.RecoverFromCloud(map[string]string{}); err != nil {
+	if err := vs.RecoverFromCloud(context.Background(), map[string]string{}); err != nil {
 		t.Fatalf("empty params should be no-op: %v", err)
 	}
 
@@ -157,11 +154,14 @@ func TestRecoverFromCloudSkipsExisting(t *testing.T) {
 func TestParamsFromEnvAWSAndAzure(t *testing.T) {
 	t.Setenv("CSI_CLOUD_PROVIDER", "aws")
 	t.Setenv("AWS_REGION", "us-east-2")
-	t.Setenv("CSI_AWS_AVAILABILITY_ZONE", "us-east-2c")
+	t.Setenv("AWS_AVAILABILITY_ZONE", "us-east-2c")
+	t.Setenv("CSI_AWS_KMS_KEY_ID", "arn:aws:kms:us-east-2:123456789012:key/test")
 	t.Setenv("CSI_AWS_ACCESS_KEY_ID", "AKIA_SHOULD_NOT_APPEAR")
 	t.Setenv("CSI_AWS_SECRET_KEY", "secret_should_not_appear")
 	params := paramsFromEnv()
-	if params["cloudProvider"] != "aws" || params["awsRegion"] != "us-east-2" || params["awsAvailabilityZone"] != "us-east-2c" {
+	if params["cloudProvider"] != "aws" || params["awsRegion"] != "us-east-2" ||
+		params["awsAvailabilityZone"] != "us-east-2c" ||
+		params["awsKmsKeyId"] != "arn:aws:kms:us-east-2:123456789012:key/test" {
 		t.Fatalf("unexpected aws env params: %#v", params)
 	}
 	if _, ok := params["awsAccessKeyId"]; ok {
@@ -175,9 +175,19 @@ func TestParamsFromEnvAWSAndAzure(t *testing.T) {
 	t.Setenv("AZURE_SUBSCRIPTION_ID", "sub-1")
 	t.Setenv("CSI_AZURE_RESOURCE_GROUP", "rg-1")
 	t.Setenv("CSI_AZURE_LOCATION", "eastus")
+	t.Setenv("CSI_AZURE_DISK_ENCRYPTION_SET_ID", "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/diskEncryptionSets/test")
 	params = paramsFromEnv()
-	if params["azureSubscriptionId"] != "sub-1" || params["azureResourceGroup"] != "rg-1" || params["azureLocation"] != "eastus" {
+	if params["azureSubscriptionId"] != "sub-1" || params["azureResourceGroup"] != "rg-1" ||
+		params["azureLocation"] != "eastus" ||
+		params["azureDiskEncryptionSetId"] != "/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.Compute/diskEncryptionSets/test" {
 		t.Fatalf("unexpected azure env params: %#v", params)
+	}
+
+	t.Setenv("CSI_CLOUD_PROVIDER", "libvirt")
+	t.Setenv("CLOUD_PROVIDER_VOLUME_PATH", "/var/lib/caa-csi")
+	params = paramsFromEnv()
+	if params["cloudProviderVolumePath"] != "/var/lib/caa-csi" {
+		t.Fatalf("unexpected libvirt env params: %#v", params)
 	}
 }
 
@@ -190,17 +200,13 @@ func TestWriteManifestSkipsRecordWithoutCloudProvider(t *testing.T) {
 	vs := mustVolumeStore(t)
 	// First on disk may be params-less; valid params should still win for the manifest.
 	if err := vs.Save(&volumeRecord{
-		VolumeID: "vol-bad",
-		Provider: "aws",
-		Path:     "path-bad",
-		Params:   map[string]string{},
+		VolumeID: "vol-bad", Provider: "aws", Path: "path-bad", CapacityBytes: 1,
+		Params: map[string]string{},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := vs.Save(&volumeRecord{
-		VolumeID: "vol-good",
-		Provider: "aws",
-		Path:     "path-good",
+		VolumeID: "vol-good", Provider: "aws", Path: "path-good", CapacityBytes: 1,
 		Params: map[string]string{
 			"cloudProvider": "aws",
 			"awsRegion":     "eu-central-1",

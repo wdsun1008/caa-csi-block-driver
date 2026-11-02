@@ -8,7 +8,7 @@ import "context"
 // VolumeInfo holds provider-agnostic metadata about a block volume.
 type VolumeInfo struct {
 	VolumeID  string
-	Path      string            // File path (Libvirt) or cloud volume ID (AWS EBS)
+	Path      string // File path (Libvirt) or cloud volume ID (AWS EBS)
 	SizeBytes int64
 	Provider  string            // "libvirt", "aws"
 	Metadata  map[string]string // Provider-specific data passed via mountInfo.json
@@ -28,6 +28,26 @@ type BlockVolumeProvider interface {
 	GetVolumeInfo(ctx context.Context, volumeID string) (*VolumeInfo, error)
 	// VolumeExists checks whether a volume with the given ID exists.
 	VolumeExists(ctx context.Context, volumeID string) (bool, error)
+}
+
+// CapacityPlanner selects the capacity a provider will actually allocate before
+// the controller persists an operation or sends a cloud mutation.
+type CapacityPlanner interface {
+	NormalizeCapacity(requiredBytes int64) (int64, error)
+}
+
+// OperationVolumeCreator supports creation that can be resumed after a lost
+// response or controller restart. The caller durably records operationID before
+// the first call and reuses it while the result of that operation is unknown.
+type OperationVolumeCreator interface {
+	CreateVolumeWithOperation(ctx context.Context, volumeID string, sizeBytes int64, operationID string) (*VolumeInfo, error)
+}
+
+// TerminalCreateError distinguishes an explicit rejection from an uncertain
+// result. Only a conclusive rejection permits retiring a pending operation ID.
+type TerminalCreateError interface {
+	error
+	TerminalCreateFailure() bool
 }
 
 // VolumeExpander is an optional interface that providers can implement to

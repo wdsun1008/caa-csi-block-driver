@@ -26,33 +26,31 @@ var csLogger = log.New(log.Writer(), "[caa-csi/controller] ", log.LstdFlags|log.
 type controllerServer struct {
 	csi.UnimplementedControllerServer
 	store *volumeStore
+	locks volumeNameLocks
 }
 
 func newControllerServer(store *volumeStore) *controllerServer {
-
 	if params := store.BootstrapParams(); params != nil {
-		if err := store.RecoverFromCloud(params); err != nil {
+		if err := store.RecoverFromCloud(context.Background(), params); err != nil {
 			csLogger.Printf("cloud recovery failed (non-fatal): %v", err)
 		}
 	} else {
 		csLogger.Printf("No bootstrap params available, skipping cloud recovery (set CSI_CLOUD_PROVIDER / CSI_BOOTSTRAP_PARAMS_FILE for empty-store recovery)")
 	}
 
-	return &controllerServer{
-		store: store,
-	}
+	return &controllerServer{store: store}
 }
 
 // loadVolumeRecord returns the local record, attempting cloud recovery first
 // when the record is missing.
-func (cs *controllerServer) loadVolumeRecord(volumeID string) (*volumeRecord, error) {
+func (cs *controllerServer) loadVolumeRecord(ctx context.Context, volumeID string) (*volumeRecord, error) {
 	rec, err := cs.store.Load(volumeID)
 	if err == nil {
 		return rec, nil
 	}
 
 	if params := cs.store.BootstrapParams(); params != nil {
-		if recErr := cs.store.RecoverFromCloud(params); recErr != nil {
+		if recErr := cs.store.RecoverFromCloud(ctx, params); recErr != nil {
 			csLogger.Printf("cloud recovery before loading %s failed: %v", volumeID, recErr)
 		}
 		if rec, err2 := cs.store.Load(volumeID); err2 == nil {
@@ -93,45 +91,123 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 	if err := validateVolumeCapabilities(req.GetVolumeCapabilities()); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported volume capability: %v", err)
 	}
+	if len(req.GetMutableParameters()) != 0 {
+		return nil, status.Error(codes.InvalidArgument, "mutable parameters are not supported")
+	}
 
-	params := cloneParams(req.GetParameters())
+	params := sanitizePersistableParams(req.GetParameters())
 	applyTopologyParams(params, req.GetAccessibilityRequirements())
+	encryptType, keyID := params["encrypt-type"], params["kbs-key-id"]
+	if (encryptType == "") != (keyID == "") {
+		return nil, status.Error(codes.InvalidArgument,
+			"encrypt-type and kbs-key-id must be set together")
+	}
+	required, limit, err := capacityRange(req)
+	if err != nil {
+		return nil, status.Errorf(codes.OutOfRange, "invalid capacity range: %v", err)
+	}
 
-	if et := params["encrypt-type"]; et != "" {
-		if params["kbs-key-id"] == "" {
-			return nil, status.Error(codes.InvalidArgument,
-				"encrypt-type is set but kbs-key-id is missing: encryption requires a KBS key reference")
+	unlock, err := cs.locks.lock(ctx, req.GetName())
+	if err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	defer unlock()
+
+	record, loadErr := cs.store.Load(req.GetName())
+	if loadErr == nil && record.State != volumeRecordStatePending {
+		if record.SchemaVersion == 0 {
+			err = legacyRecordCompatible(record, params, required, limit)
+		} else {
+			fingerprint, fingerprintErr := createRequestFingerprint(req, record.PlannedCapacityBytes)
+			if fingerprintErr != nil {
+				return nil, status.Errorf(codes.InvalidArgument, "invalid create request: %v", fingerprintErr)
+			}
+			err = requestFitsRecord(record, fingerprint, required, limit)
 		}
-	}
-
-	capacity := req.GetCapacityRange().GetRequiredBytes()
-	if capacity == 0 {
-		capacity = 1073741824 // default 1 GiB
-	}
-
-	if rec, err := cs.store.Load(req.GetName()); err == nil {
-		if rec.CapacityBytes != 0 && rec.CapacityBytes != capacity {
+		if err != nil {
 			return nil, status.Errorf(codes.AlreadyExists,
-				"volume %s already exists with different capacity (%d != %d)", req.GetName(), rec.CapacityBytes, capacity)
+				"volume %s already exists incompatibly: %v", req.GetName(), err)
 		}
 		csLogger.Printf("CreateVolume: %s already exists, returning existing", req.GetName())
-		volumeCtx := map[string]string{"cloudProvider": rec.Provider, "cloud-volume-path": rec.Path}
-		for k, v := range rec.Params {
-			volumeCtx[k] = v
-		}
-		return &csi.CreateVolumeResponse{
-			Volume: &csi.Volume{
-				VolumeId:           req.GetName(),
-				CapacityBytes:      rec.CapacityBytes,
-				VolumeContext:      volumeCtx,
-				AccessibleTopology: accessibleTopology(rec.Params),
-			},
-		}, nil
+		return createVolumeResponse(record, req.GetVolumeContentSource()), nil
+	}
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		return nil, status.Errorf(codes.Internal, "failed to load controller state for volume %s: %v", req.GetName(), loadErr)
 	}
 
-	p, err := provider.NewBlockVolumeProvider(params)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to create provider: %v", err)
+	var p provider.BlockVolumeProvider
+	pendingPersisted := loadErr == nil
+	if loadErr == nil {
+		fingerprint, fingerprintErr := createRequestFingerprint(req, record.PlannedCapacityBytes)
+		if fingerprintErr != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid create request: %v", fingerprintErr)
+		}
+		if err := requestFitsRecord(record, fingerprint, required, limit); err != nil {
+			return nil, status.Errorf(codes.AlreadyExists,
+				"volume %s has an incompatible pending create: %v", req.GetName(), err)
+		}
+		params = copyStringMap(record.Params)
+		p, err = provider.NewBlockVolumeProvider(params)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal, "failed to resume provider operation: %v", err)
+		}
+		if err := validateVolumeContentSource(ctx, p, req.GetVolumeContentSource()); err != nil {
+			return nil, err
+		}
+		if req.GetVolumeContentSource() != nil {
+			return nil, status.Error(codes.FailedPrecondition,
+				"persisted create operation unexpectedly contains a content source")
+		}
+		if _, ok := p.(provider.OperationVolumeCreator); !ok {
+			return nil, status.Error(codes.FailedPrecondition,
+				"persisted create operation is not supported by its provider")
+		}
+	} else {
+		p, err = provider.NewBlockVolumeProvider(params)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "failed to create provider: %v", err)
+		}
+		plannedCapacity := required
+		if planner, ok := p.(provider.CapacityPlanner); ok {
+			plannedCapacity, err = planner.NormalizeCapacity(required)
+			if err != nil {
+				return nil, status.Errorf(codes.OutOfRange, "provider cannot satisfy capacity range: %v", err)
+			}
+		}
+		if plannedCapacity < required || (limit > 0 && plannedCapacity > limit) {
+			return nil, status.Errorf(codes.OutOfRange,
+				"provider capacity %d is outside requested range [%d,%d]", plannedCapacity, required, limit)
+		}
+		if err := validateVolumeContentSource(ctx, p, req.GetVolumeContentSource()); err != nil {
+			return nil, err
+		}
+		fingerprint, err := createRequestFingerprint(req, plannedCapacity)
+		if err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid create request: %v", err)
+		}
+		record = &volumeRecord{
+			SchemaVersion:        volumeRecordSchemaVersion,
+			State:                volumeRecordStatePending,
+			VolumeID:             req.GetName(),
+			Provider:             params["cloudProvider"],
+			PlannedCapacityBytes: plannedCapacity,
+			Params:               params,
+			RequestFingerprint:   fingerprint,
+		}
+		// Only providers with an explicit durable operation identity may leave
+		// pending state. Other providers retain their existing idempotency
+		// contract and are recorded only after CreateVolume succeeds.
+		if _, ok := p.(provider.OperationVolumeCreator); ok && req.GetVolumeContentSource() == nil {
+			record.OperationID, err = newVolumeOperationID()
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "%v", err)
+			}
+			if err := cs.store.Save(record); err != nil {
+				return nil, status.Errorf(codes.Internal,
+					"failed to persist create operation before cloud mutation: %v", err)
+			}
+			pendingPersisted = true
+		}
 	}
 
 	var volInfo *provider.VolumeInfo
@@ -155,7 +231,7 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 				return nil, status.Errorf(codes.Unimplemented, "provider does not support creating volumes from snapshot")
 			}
 			csLogger.Printf("CreateVolume: %s from snapshot %s", req.GetName(), snapID)
-			volInfo, err = cloner.CreateVolumeFromSnapshot(ctx, req.GetName(), snapID, capacity)
+			volInfo, err = cloner.CreateVolumeFromSnapshot(ctx, req.GetName(), snapID, record.PlannedCapacityBytes)
 		case src.GetVolume() != nil:
 			srcVolID := src.GetVolume().GetVolumeId()
 			exists, existsErr := p.VolumeExists(ctx, srcVolID)
@@ -170,51 +246,119 @@ func (cs *controllerServer) CreateVolume(ctx context.Context, req *csi.CreateVol
 				return nil, status.Errorf(codes.Unimplemented, "provider does not support volume cloning")
 			}
 			csLogger.Printf("CreateVolume: %s cloned from volume %s", req.GetName(), srcVolID)
-			volInfo, err = cloner.CreateVolumeFromVolume(ctx, req.GetName(), srcVolID, capacity)
+			volInfo, err = cloner.CreateVolumeFromVolume(ctx, req.GetName(), srcVolID, record.PlannedCapacityBytes)
 		default:
 			return nil, status.Error(codes.InvalidArgument, "unsupported VolumeContentSource type")
 		}
 	} else {
-		volInfo, err = p.CreateVolume(ctx, req.GetName(), capacity)
+		if creator, ok := p.(provider.OperationVolumeCreator); ok {
+			volInfo, err = creator.CreateVolumeWithOperation(ctx, req.GetName(), record.PlannedCapacityBytes, record.OperationID)
+		} else {
+			volInfo, err = p.CreateVolume(ctx, req.GetName(), record.PlannedCapacityBytes)
+		}
 	}
 	if err != nil {
+		var terminal provider.TerminalCreateError
+		if pendingPersisted && errors.As(err, &terminal) && terminal.TerminalCreateFailure() {
+			if deleteErr := cs.store.Delete(req.GetName()); deleteErr != nil {
+				return nil, status.Errorf(codes.Internal,
+					"provider rejected create and pending state cleanup failed: %v (provider error: %v)", deleteErr, err)
+			}
+		}
 		return nil, status.Errorf(codes.Internal, "provider.CreateVolume failed: %v", err)
 	}
 
-	if err := cs.store.Save(&volumeRecord{
-		VolumeID:      req.GetName(),
-		Provider:      volInfo.Provider,
-		Path:          volInfo.Path,
-		CapacityBytes: capacity,
-		Params:        params,
-	}); err != nil {
-		csLogger.Printf("failed to persist volume record for %s: %v (volume created in cloud but record may be lost)", req.GetName(), err)
+	if err := validateCreatedVolume(req.GetName(), volInfo); err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
 	}
-	csLogger.Printf("CreateVolume: %s (provider=%s, path=%s)", req.GetName(), volInfo.Provider, volInfo.Path)
+	if volInfo.SizeBytes < required || (limit > 0 && volInfo.SizeBytes > limit) {
+		return nil, status.Errorf(codes.OutOfRange,
+			"provider allocated %d bytes outside requested range [%d,%d]", volInfo.SizeBytes, required, limit)
+	}
+	record.State = volumeRecordStateReady
+	record.Provider = volInfo.Provider
+	record.Path = volInfo.Path
+	record.CapacityBytes = volInfo.SizeBytes
+	record.Metadata = volInfo.Metadata
+	if err := cs.store.Save(record); err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"cloud volume %s exists, but ready state persistence failed; retry will resume operation: %v", req.GetName(), err)
+	}
+	csLogger.Printf("CreateVolume: %s created (provider=%s)", req.GetName(), volInfo.Provider)
+	return createVolumeResponse(record, req.GetVolumeContentSource()), nil
+}
 
-	volumeCtx := map[string]string{
-		"cloudProvider":     volInfo.Provider,
-		"cloud-volume-path": volInfo.Path,
+func validateVolumeContentSource(ctx context.Context, p provider.BlockVolumeProvider, source *csi.VolumeContentSource) error {
+	if source == nil {
+		return nil
 	}
-	for k, v := range params {
-		volumeCtx[k] = v
+	_, supportsClone := p.(provider.VolumeCloner)
+	switch {
+	case source.GetSnapshot() != nil:
+		snapshotID := source.GetSnapshot().GetSnapshotId()
+		snapshotter, ok := p.(provider.VolumeSnapshotter)
+		if !ok {
+			return status.Errorf(codes.NotFound, "snapshot %s not found", snapshotID)
+		}
+		snapshot, err := snapshotter.FindSnapshot(ctx, snapshotID)
+		if err != nil {
+			return status.Errorf(codes.Internal, "failed to verify snapshot %s: %v", snapshotID, err)
+		}
+		if snapshot == nil {
+			return status.Errorf(codes.NotFound, "snapshot %s not found", snapshotID)
+		}
+		if !supportsClone {
+			return status.Error(codes.Unimplemented, "provider does not support creating volumes from snapshot")
+		}
+	case source.GetVolume() != nil:
+		sourceVolumeID := source.GetVolume().GetVolumeId()
+		exists, err := p.VolumeExists(ctx, sourceVolumeID)
+		if err != nil {
+			return status.Errorf(codes.Internal, "failed to verify source volume %s: %v", sourceVolumeID, err)
+		}
+		if !exists {
+			return status.Errorf(codes.NotFound, "source volume %s not found", sourceVolumeID)
+		}
+		if !supportsClone {
+			return status.Error(codes.Unimplemented, "provider does not support volume cloning")
+		}
+	default:
+		return status.Error(codes.InvalidArgument, "unsupported VolumeContentSource type")
 	}
-	for k, v := range volInfo.Metadata {
-		volumeCtx[k] = v
-	}
+	return nil
+}
 
-	vol := &csi.Volume{
-		VolumeId:           req.GetName(),
-		CapacityBytes:      capacity,
-		VolumeContext:      volumeCtx,
-		AccessibleTopology: accessibleTopology(params),
+func validateCreatedVolume(volumeID string, info *provider.VolumeInfo) error {
+	if info == nil || strings.TrimSpace(info.Provider) == "" || strings.TrimSpace(info.Path) == "" || info.SizeBytes <= 0 {
+		return errors.New("provider returned incomplete cloud volume identity or capacity")
 	}
-
-	if src := req.GetVolumeContentSource(); src != nil {
-		vol.ContentSource = src
+	if info.VolumeID != "" && info.VolumeID != volumeID {
+		return fmt.Errorf("provider returned volume identity %q for request %q", info.VolumeID, volumeID)
 	}
+	return nil
+}
 
-	return &csi.CreateVolumeResponse{Volume: vol}, nil
+func createVolumeResponse(record *volumeRecord, source *csi.VolumeContentSource) *csi.CreateVolumeResponse {
+	return &csi.CreateVolumeResponse{Volume: &csi.Volume{
+		VolumeId: record.VolumeID, CapacityBytes: record.CapacityBytes,
+		VolumeContext: volumeContextForRecord(record), ContentSource: source,
+		AccessibleTopology: accessibleTopology(record.Params),
+	}}
+}
+
+func volumeContextForRecord(rec *volumeRecord) map[string]string {
+	volumeCtx := make(map[string]string, len(rec.Params)+len(rec.Metadata)+4)
+	for key, value := range rec.Params {
+		volumeCtx[key] = value
+	}
+	for key, value := range rec.Metadata {
+		volumeCtx[key] = value
+	}
+	volumeCtx["cloudProvider"] = rec.Provider
+	volumeCtx["cloud-provider"] = rec.Provider
+	volumeCtx["cloud-volume-path"] = rec.Path
+	volumeCtx["capacity_in_bytes"] = strconv.FormatInt(rec.CapacityBytes, 10)
+	return volumeCtx
 }
 
 func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
@@ -223,11 +367,18 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		return nil, status.Error(codes.InvalidArgument, "Volume ID missing")
 	}
 
+	unlock, err := cs.locks.lock(ctx, volumeID)
+	if err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	defer unlock()
+
+	record, loadErr := cs.loadVolumeRecord(ctx, volumeID)
 	var params map[string]string
-	if rec, err := cs.loadVolumeRecord(volumeID); err == nil {
-		params = rec.Params
-	} else {
-		params = cs.resolveProviderParams(req.GetSecrets())
+	if loadErr == nil {
+		params = record.Params
+	} else if errors.Is(loadErr, os.ErrNotExist) {
+		params = sanitizePersistableParams(cs.resolveProviderParams(req.GetSecrets()))
 		if params == nil {
 			return nil, status.Errorf(codes.FailedPrecondition,
 				"volume %s not found in local store and no cloud provider params available for delete; "+
@@ -235,11 +386,39 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 				volumeID)
 		}
 		csLogger.Printf("DeleteVolume: volume %s missing from store, deleting via bootstrap params", volumeID)
+	} else {
+		return nil, status.Errorf(codes.Internal, "failed to load controller state for volume %s: %v", volumeID, loadErr)
 	}
 
 	p, err := provider.NewBlockVolumeProvider(params)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create provider for delete: %v", err)
+	}
+	if record != nil && record.State == volumeRecordStatePending {
+		creator, ok := p.(provider.OperationVolumeCreator)
+		if !ok {
+			return nil, status.Errorf(codes.Aborted,
+				"volume %s has a pending create; retry CreateVolume before delete", volumeID)
+		}
+		info, err := creator.CreateVolumeWithOperation(ctx,
+			record.VolumeID, record.PlannedCapacityBytes, record.OperationID)
+		if err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"failed to complete pending create before delete; operation remains recoverable: %v", err)
+		}
+		if err := validateCreatedVolume(record.VolumeID, info); err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"failed to complete pending create before delete; operation remains recoverable: %v", err)
+		}
+		record.State = volumeRecordStateReady
+		record.Provider = info.Provider
+		record.Path = info.Path
+		record.CapacityBytes = info.SizeBytes
+		record.Metadata = info.Metadata
+		if err := cs.store.Save(record); err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"pending create completed, but ready state persistence failed; retry before delete: %v", err)
+		}
 	}
 
 	if err := p.DeleteVolume(ctx, volumeID); err != nil {
@@ -250,7 +429,10 @@ func (cs *controllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		return nil, status.Errorf(codes.Internal, "provider.DeleteVolume failed: %v", err)
 	}
 
-	cs.store.Delete(volumeID)
+	if err := cs.store.Delete(volumeID); err != nil {
+		return nil, status.Errorf(codes.Internal,
+			"cloud volume %s was deleted, but controller state cleanup failed: %v", volumeID, err)
+	}
 	csLogger.Printf("DeleteVolume: %s deleted", volumeID)
 	return &csi.DeleteVolumeResponse{}, nil
 }
@@ -266,7 +448,7 @@ func (cs *controllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 		return nil, status.Error(codes.InvalidArgument, "Required capacity missing")
 	}
 
-	rec, err := cs.loadVolumeRecord(volumeID)
+	rec, err := cs.loadVolumeRecord(ctx, volumeID)
 	if err != nil {
 		return nil, volumeLookupStatus("volume", volumeID, err)
 	}
@@ -356,7 +538,7 @@ func (cs *controllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 		return nil, status.Error(codes.InvalidArgument, "Snapshot name missing")
 	}
 
-	rec, err := cs.loadVolumeRecord(sourceVolumeID)
+	rec, err := cs.loadVolumeRecord(ctx, sourceVolumeID)
 	if err != nil {
 		return nil, volumeLookupStatus("source volume", sourceVolumeID, err)
 	}
@@ -447,7 +629,7 @@ func (cs *controllerServer) ListSnapshots(ctx context.Context, req *csi.ListSnap
 
 	var params map[string]string
 	if sourceVolumeID != "" {
-		rec, err := cs.loadVolumeRecord(sourceVolumeID)
+		rec, err := cs.loadVolumeRecord(ctx, sourceVolumeID)
 		if err != nil {
 			return nil, volumeLookupStatus("source volume", sourceVolumeID, err)
 		}
@@ -556,7 +738,7 @@ func validateVolumeCapabilities(caps []*csi.VolumeCapability) error {
 	return nil
 }
 
-func (cs *controllerServer) ValidateVolumeCapabilities(_ context.Context, req *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
+func (cs *controllerServer) ValidateVolumeCapabilities(ctx context.Context, req *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
 	if req.GetVolumeId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "Volume ID missing")
 	}
@@ -564,7 +746,7 @@ func (cs *controllerServer) ValidateVolumeCapabilities(_ context.Context, req *c
 		return nil, status.Error(codes.InvalidArgument, "Volume capabilities missing")
 	}
 
-	if _, err := cs.loadVolumeRecord(req.GetVolumeId()); err != nil {
+	if _, err := cs.loadVolumeRecord(ctx, req.GetVolumeId()); err != nil {
 		return nil, volumeLookupStatus("volume", req.GetVolumeId(), err)
 	}
 
