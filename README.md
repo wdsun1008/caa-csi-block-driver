@@ -12,6 +12,7 @@ for volume attachment to PodVMs.
 |----------|---------|----------------|--------|
 | **AWS** | EBS Volumes | IAM role or access key credentials | Supported |
 | **Azure** | Managed Disks | DefaultAzureCredential (Workload Identity, Managed Identity, env vars) | Supported |
+| **Alibaba Cloud** | ESSD PL0 | Alibaba default credential chain | CSI provisioning; [CAA prerequisites](docs/alibabacloud.md) apply |
 | **Libvirt** | Raw disk files | N/A (local) | Supported (dev/test) |
 
 ## Architecture

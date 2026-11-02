@@ -102,6 +102,11 @@ spec:
                   key: AWS_SECRET_ACCESS_KEY
             {{- end }}
             {{- end }}
+          {{- if and (eq .Values.provider "alibabacloud") .Values.alibabacloud.credentialsSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ .Values.alibabacloud.credentialsSecret | quote }}
+          {{- end }}
           {{- with .Values.resources.driver }}
           resources:
             {{- toYaml . | nindent 12 }}

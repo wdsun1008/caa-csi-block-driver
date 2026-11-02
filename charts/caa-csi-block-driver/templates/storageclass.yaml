@@ -11,7 +11,7 @@ metadata:
 provisioner: {{ .Values.csiDriver.name }}
 reclaimPolicy: {{ .Values.storageClass.reclaimPolicy }}
 volumeBindingMode: {{ .Values.storageClass.volumeBindingMode }}
-allowVolumeExpansion: {{ .Values.storageClass.allowVolumeExpansion }}
+allowVolumeExpansion: {{ and (ne .Values.provider "alibabacloud") .Values.storageClass.allowVolumeExpansion }}
 parameters:
   cloudProvider: {{ .Values.provider }}
   {{- if eq .Values.provider "aws" }}
@@ -26,6 +26,10 @@ parameters:
   azureResourceGroup: {{ required "azure.resourceGroup is required when provider=azure" .Values.azure.resourceGroup | quote }}
   azureLocation: {{ required "azure.location is required when provider=azure" .Values.azure.location | quote }}
   azureDiskSku: {{ .Values.azure.diskSku | quote }}
+  {{- end }}
+  {{- if eq .Values.provider "alibabacloud" }}
+  alibabaRegion: {{ required "alibabacloud.region is required" .Values.alibabacloud.region | quote }}
+  alibabaZoneId: {{ required "alibabacloud.zoneId is required" .Values.alibabacloud.zoneId | quote }}
   {{- end }}
   {{- if eq .Values.provider "libvirt" }}
   cloudProviderVolumePath: {{ .Values.libvirt.volumeDir | quote }}

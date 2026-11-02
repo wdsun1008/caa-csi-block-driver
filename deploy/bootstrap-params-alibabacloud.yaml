@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: caa-csi-bootstrap-params
+  namespace: caa-csi-block
+data:
+  bootstrap-params.json: |
+    {
+      "cloudProvider": "alibabacloud",
+      "alibabaRegion": "cn-beijing",
+      "alibabaZoneId": "cn-beijing-i"
+    }

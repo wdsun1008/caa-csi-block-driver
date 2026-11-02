@@ -1,4 +1,4 @@
-# Cloud provider: aws, azure, or libvirt
+# Cloud provider: aws, azure, alibabacloud, or libvirt
 provider: aws
 
 nameOverride: ""
@@ -41,6 +41,13 @@ azure:
   resourceGroup: ""
   location: ""
   diskSku: StandardSSD_LRS
+
+# Alibaba Cloud provider settings (ESSD PL0; expansion is not supported)
+alibabacloud:
+  region: ""
+  zoneId: ""
+  # Optional Secret containing the standard Alibaba credential environment variables.
+  credentialsSecret: ""
 
 # Libvirt provider settings
 libvirt:

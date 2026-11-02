@@ -1,0 +1,12 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: caa-alibaba-essd
+provisioner: caa-csi-block.csi.confidentialcontainers.io
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
+parameters:
+  cloudProvider: alibabacloud
+  alibabaRegion: cn-beijing
+  alibabaZoneId: cn-beijing-i

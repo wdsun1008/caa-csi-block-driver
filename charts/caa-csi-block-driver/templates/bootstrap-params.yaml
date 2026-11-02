@@ -20,6 +20,9 @@ data:
       "azureResourceGroup": {{ required "azure.resourceGroup is required when provider=azure" .Values.azure.resourceGroup | quote }},
       "azureLocation": {{ required "azure.location is required when provider=azure" .Values.azure.location | quote }},
       "azureDiskSKU": {{ .Values.azure.diskSku | quote }}
+      {{- else if eq .Values.provider "alibabacloud" }},
+      "alibabaRegion": {{ required "alibabacloud.region is required" .Values.alibabacloud.region | quote }},
+      "alibabaZoneId": {{ required "alibabacloud.zoneId is required" .Values.alibabacloud.zoneId | quote }}
       {{- else if eq .Values.provider "libvirt" }},
       "cloudProviderVolumePath": {{ .Values.libvirt.volumeDir | quote }}
       {{- end }}
