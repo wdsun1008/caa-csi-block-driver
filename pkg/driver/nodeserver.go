@@ -25,6 +25,8 @@ import (
 	provider "github.com/confidential-devhub/caa-csi-block-driver/pkg/provider"
 )
 
+var removeAllPath = os.RemoveAll
+
 var nsLogger = log.New(log.Writer(), "[caa-csi/node] ", log.LstdFlags|log.Lmsgprefix)
 
 const (
@@ -186,15 +188,21 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 
 	ns.mu.Lock()
 	devicePath := ns.devices[volumeID]
+	if devicePath == "" {
+		devicePath = req.GetVolumeContext()["cloud-volume-path"]
+		if devicePath != "" {
+			ns.devices[volumeID] = devicePath
+		}
+	}
 	ns.mu.Unlock()
 
 	if devicePath == "" {
 		return nil, status.Errorf(codes.FailedPrecondition, "volume %s not staged (no device path)", volumeID)
 	}
 
-	attrib := req.GetVolumeContext()
-	if attrib == nil {
-		attrib = make(map[string]string)
+	attrib := make(map[string]string, len(req.GetVolumeContext())+2)
+	for key, value := range req.GetVolumeContext() {
+		attrib[key] = value
 	}
 
 	attrib["cloud-volume-id"] = volumeID
@@ -209,21 +217,14 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 		Metadata:   attrib,
 	}
 
-	data, err := json.Marshal(info)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to marshal mountInfo: %v", err)
-	}
-
-	volumeDir := filepath.Join(getKataDirectVolumeRootPath(), b64.URLEncoding.EncodeToString([]byte(targetPath)))
-	if err := os.MkdirAll(volumeDir, 0700); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create kata direct volume dir %s: %v", volumeDir, err)
-	}
-	if err := os.WriteFile(filepath.Join(volumeDir, mountInfoFileName), data, 0600); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to write mountInfo.json: %v", err)
-	}
-
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
 	if err := os.MkdirAll(targetPath, 0750); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create target path %s: %v", targetPath, err)
+	}
+	volumeDir := filepath.Join(getKataDirectVolumeRootPath(), b64.URLEncoding.EncodeToString([]byte(targetPath)))
+	if err := publishLegacyMountInfo(filepath.Join(volumeDir, mountInfoFileName), info); err != nil {
+		return nil, err
 	}
 
 	nsLogger.Printf("NodePublishVolume: %s published at %s (device=%s, provider=%s)",
@@ -233,18 +234,23 @@ func (ns *nodeServer) NodePublishVolume(_ context.Context, req *csi.NodePublishV
 }
 
 func (ns *nodeServer) NodeUnpublishVolume(_ context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
+	if req.GetVolumeId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "Volume ID missing")
+	}
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
 	targetPath := req.GetTargetPath()
 	if targetPath == "" {
 		return nil, status.Error(codes.InvalidArgument, "Target path missing")
 	}
 
 	volumeDir := filepath.Join(getKataDirectVolumeRootPath(), b64.URLEncoding.EncodeToString([]byte(targetPath)))
-	if err := os.RemoveAll(volumeDir); err != nil {
-		nsLogger.Printf("WARNING: failed to remove kata direct volume dir %s: %v", volumeDir, err)
+	if err := removeAllPath(volumeDir); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to remove kata direct volume dir %s: %v", volumeDir, err)
 	}
 
-	if err := os.RemoveAll(targetPath); err != nil {
-		nsLogger.Printf("WARNING: failed to remove target path %s: %v", targetPath, err)
+	if err := removeAllPath(targetPath); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to remove target path %s: %v", targetPath, err)
 	}
 
 	nsLogger.Printf("NodeUnpublishVolume: %s unpublished", req.GetVolumeId())

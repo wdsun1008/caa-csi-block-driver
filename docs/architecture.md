@@ -229,3 +229,11 @@ Snapshot lifecycle is supported via the `VolumeSnapshotter` interface:
 |---------|-------------|-----|
 | `InvalidVolume.ZoneMismatch` / disk AZ ≠ PodVM AZ | EBS created in a different AZ than CAA's subnet | Set StorageClass `awsAvailabilityZone` to the CAA `AWS_SUBNET_ID` AZ. Do not use worker-node topology when the PodVM subnet is in another AZ. |
 | `ConflictingUserInput` on Azure VM create | Disk still attached to stale VM | Orphan detach logic handles this automatically; if it persists, manually delete stale VM |
+
+## Atomic node publication
+
+NodePublishVolume writes complete legacy mount metadata through a temporary file,
+file fsync, rename and directory fsync. Repeated publication preserves compatible
+records and rejects conflicting same-target metadata. A node restart can rebuild
+its device map from `cloud-volume-path` in the controller's VolumeContext.
+NodeUnpublishVolume returns cleanup errors so kubelet can retry them.
